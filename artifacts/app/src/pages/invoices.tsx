@@ -16,13 +16,14 @@ import { toast } from "@/hooks/use-toast"
 import { formatCurrency, formatDate } from "@/lib/utils"
 
 import {
-  useListInvoices,
-  useListTransactions,
+  listInvoices,
+  listTransactions,
   useCreateInvoice,
   useUpdateInvoice,
   useDeleteInvoice,
   getListInvoicesQueryKey,
   Invoice,
+  Transaction,
   InvoiceStatus,
 } from "@workspace/api-client-react"
 
@@ -46,48 +47,46 @@ export default function InvoicesPage() {
   const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS)
   const [applied, setApplied] = useState<Filters | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [invoices, setInvoices] = useState<Invoice[] | null>(null)
+  const [deposits, setDeposits] = useState<Transaction[] | null>(null)
 
   const hasApplied = applied !== null
 
-  // Only fetch once the user hits Search — Orval's natural key includes params,
-  // so it changes whenever filters change and triggers a fresh fetch automatically.
-  const invoiceParams = hasApplied && applied?.docType === "invoices"
-    ? {
-        dateFrom: applied.dateFrom || undefined,
-        dateTo: applied.dateTo || undefined,
-        invoiceNumber: applied.invoiceNumber || undefined,
+  const handleSearch = async () => {
+    const filters = { ...draft }
+    setApplied(filters)
+    setIsLoading(true)
+    try {
+      if (filters.docType === "invoices") {
+        const data = await listInvoices({
+          dateFrom: filters.dateFrom || undefined,
+          dateTo: filters.dateTo || undefined,
+          invoiceNumber: filters.invoiceNumber || undefined,
+        })
+        setInvoices(data)
+        setDeposits(null)
+      } else {
+        const data = await listTransactions({
+          type: "income",
+          dateFrom: filters.dateFrom || undefined,
+          dateTo: filters.dateTo || undefined,
+        })
+        setDeposits(data)
+        setInvoices(null)
       }
-    : undefined
-
-  const depositParams = hasApplied && applied?.docType === "deposits"
-    ? {
-        type: "income" as const,
-        dateFrom: applied.dateFrom || undefined,
-        dateTo: applied.dateTo || undefined,
-      }
-    : undefined
-
-  const { data: invoices, isLoading: loadingInvoices, isFetching: fetchingInvoices } = useListInvoices(
-    invoiceParams,
-    { query: { enabled: !!invoiceParams } }
-  )
-
-  const { data: deposits, isLoading: loadingDeposits, isFetching: fetchingDeposits } = useListTransactions(
-    depositParams,
-    { query: { enabled: !!depositParams } }
-  )
-
-  const isLoading =
-    (applied?.docType === "invoices" && (loadingInvoices || fetchingInvoices)) ||
-    (applied?.docType === "deposits" && (loadingDeposits || fetchingDeposits))
-
-  const handleSearch = () => {
-    setApplied({ ...draft })
+    } catch {
+      toast({ title: "Search failed", description: "Could not load records.", variant: "destructive" })
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleClear = () => {
     setDraft(EMPTY_FILTERS)
     setApplied(null)
+    setInvoices(null)
+    setDeposits(null)
   }
 
   const invoiceStatusColors: Record<string, string> = {
