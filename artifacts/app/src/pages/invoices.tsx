@@ -1,159 +1,342 @@
 import React, { useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { 
-  FileText, Plus, UploadCloud, Search, MoreHorizontal, 
-  Trash2, Edit, AlertCircle, Loader2, Download,
-  CheckCircle2
+import {
+  Search, X, FileText, ArrowDownRight, Loader2,
+  Edit, Trash2, AlertCircle, Plus
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Badge } from "@/components/ui/badge"
 import { toast } from "@/hooks/use-toast"
 import { formatCurrency, formatDate } from "@/lib/utils"
 
-import { 
-  useListInvoices, 
-  useCreateInvoice, 
-  useUpdateInvoice, 
+import {
+  useListInvoices,
+  useListTransactions,
+  useCreateInvoice,
+  useUpdateInvoice,
   useDeleteInvoice,
   getListInvoicesQueryKey,
   Invoice,
-  InvoiceStatus
+  InvoiceStatus,
 } from "@workspace/api-client-react"
 
+type DocType = "invoices" | "deposits"
+
+interface Filters {
+  docType: DocType
+  dateFrom: string
+  dateTo: string
+  invoiceNumber: string
+}
+
+const EMPTY_FILTERS: Filters = {
+  docType: "invoices",
+  dateFrom: "",
+  dateTo: "",
+  invoiceNumber: "",
+}
+
 export default function InvoicesPage() {
-  const queryClient = useQueryClient()
-  const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
-  
-  const { data: invoices, isLoading } = useListInvoices(
-    { search: search || undefined, status: statusFilter !== "all" ? statusFilter : undefined },
-    { query: { queryKey: ['invoices', search, statusFilter] } }
+  const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS)
+  const [applied, setApplied] = useState<Filters | null>(null)
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+
+  const hasApplied = applied !== null
+
+  // Only fetch once the user hits Search
+  const { data: invoices, isLoading: loadingInvoices, isFetching: fetchingInvoices } = useListInvoices(
+    {
+      dateFrom: applied?.dateFrom || undefined,
+      dateTo: applied?.dateTo || undefined,
+      invoiceNumber: applied?.invoiceNumber || undefined,
+    },
+    {
+      query: {
+        enabled: hasApplied && applied?.docType === "invoices",
+        queryKey: [
+          "invoices-search",
+          applied?.dateFrom,
+          applied?.dateTo,
+          applied?.invoiceNumber,
+        ],
+      },
+    }
   )
 
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [isBulkOpen, setIsBulkOpen] = useState(false)
-  const [isUploadLoading, setIsUploadLoading] = useState(false)
+  const { data: deposits, isLoading: loadingDeposits, isFetching: fetchingDeposits } = useListTransactions(
+    {
+      type: "income",
+      dateFrom: applied?.dateFrom || undefined,
+      dateTo: applied?.dateTo || undefined,
+    },
+    {
+      query: {
+        enabled: hasApplied && applied?.docType === "deposits",
+        queryKey: ["deposits-search", applied?.dateFrom, applied?.dateTo],
+      },
+    }
+  )
+
+  const isLoading =
+    (applied?.docType === "invoices" && (loadingInvoices || fetchingInvoices)) ||
+    (applied?.docType === "deposits" && (loadingDeposits || fetchingDeposits))
+
+  const handleSearch = () => {
+    setApplied({ ...draft })
+  }
+
+  const handleClear = () => {
+    setDraft(EMPTY_FILTERS)
+    setApplied(null)
+  }
+
+  const invoiceStatusColors: Record<string, string> = {
+    draft: "bg-slate-100 text-slate-600 border-slate-200",
+    sent: "bg-blue-50 text-blue-700 border-blue-200",
+    paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    overdue: "bg-rose-50 text-rose-700 border-rose-200",
+    cancelled: "bg-gray-100 text-gray-500 border-gray-200",
+  }
 
   return (
     <div className="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">Invoices</h1>
-          <p className="text-muted-foreground mt-1">Manage billing, track payments, and sync to QuickBooks.</p>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Records</h1>
+          <p className="text-muted-foreground mt-1">Search invoices and deposits by date range or reference number.</p>
         </div>
-        <div className="flex gap-2">
-          <Dialog open={isBulkOpen} onOpenChange={setIsBulkOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" className="shadow-sm">
-                <UploadCloud className="w-4 h-4 mr-2" />
-                Bulk Upload
-              </Button>
-            </DialogTrigger>
-            <BulkUploadDialog onClose={() => setIsBulkOpen(false)} />
-          </Dialog>
-          
+        {applied?.docType === "invoices" && (
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <DialogTrigger asChild>
-              <Button className="shadow-sm">
+              <Button className="shadow-sm shrink-0" data-testid="button-create-invoice">
                 <Plus className="w-4 h-4 mr-2" />
                 New Invoice
               </Button>
             </DialogTrigger>
             <CreateInvoiceDialog onClose={() => setIsCreateOpen(false)} />
           </Dialog>
-        </div>
+        )}
       </div>
 
+      {/* Filter Bar */}
       <Card className="shadow-sm border-muted">
-        <div className="p-4 border-b flex flex-col sm:flex-row gap-4 items-center justify-between bg-muted/20">
-          <div className="relative w-full sm:max-w-xs">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input 
-              placeholder="Search by customer or number..." 
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-9 bg-background shadow-sm"
-            />
-          </div>
-          <div className="w-full sm:w-[200px]">
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="h-9 bg-background shadow-sm">
-                <SelectValue placeholder="All Statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="sent">Sent</SelectItem>
-                <SelectItem value="paid">Paid</SelectItem>
-                <SelectItem value="overdue">Overdue</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        
-        <div className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[120px]">Invoice No.</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Issue Date</TableHead>
-                <TableHead>Due Date</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead className="w-[100px] text-center">Status</TableHead>
-                <TableHead className="w-[80px]"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-muted-foreground" />
-                  </TableCell>
-                </TableRow>
-              ) : !invoices || invoices.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="h-48 text-center">
-                    <div className="flex flex-col items-center justify-center text-muted-foreground">
-                      <FileText className="w-10 h-10 mb-2 opacity-20" />
-                      <p className="text-sm font-medium">No invoices found</p>
-                      <p className="text-xs">Adjust your search or create a new invoice.</p>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                invoices.map((inv) => (
-                  <InvoiceRow key={inv.id} invoice={inv} />
-                ))
+        <CardContent className="p-5">
+          <div className="flex flex-wrap gap-3 items-end">
+            {/* Document Type */}
+            <div className="space-y-1.5 min-w-[160px]">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Document Type</label>
+              <Select
+                value={draft.docType}
+                onValueChange={(v: DocType) => setDraft(d => ({ ...d, docType: v, invoiceNumber: "" }))}
+              >
+                <SelectTrigger className="h-9 bg-background" data-testid="select-doc-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="invoices">Invoices</SelectItem>
+                  <SelectItem value="deposits">Deposits</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Date From */}
+            <div className="space-y-1.5 min-w-[150px]">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date From</label>
+              <Input
+                type="date"
+                value={draft.dateFrom}
+                onChange={e => setDraft(d => ({ ...d, dateFrom: e.target.value }))}
+                className="h-9 bg-background"
+                data-testid="input-date-from"
+              />
+            </div>
+
+            {/* Date To */}
+            <div className="space-y-1.5 min-w-[150px]">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date To</label>
+              <Input
+                type="date"
+                value={draft.dateTo}
+                onChange={e => setDraft(d => ({ ...d, dateTo: e.target.value }))}
+                className="h-9 bg-background"
+                data-testid="input-date-to"
+              />
+            </div>
+
+            {/* Invoice Number — invoices only */}
+            {draft.docType === "invoices" && (
+              <div className="space-y-1.5 min-w-[160px]">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Invoice No.</label>
+                <Input
+                  placeholder="e.g. INV-001"
+                  value={draft.invoiceNumber}
+                  onChange={e => setDraft(d => ({ ...d, invoiceNumber: e.target.value }))}
+                  className="h-9 bg-background"
+                  data-testid="input-invoice-number"
+                />
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-2 pb-0.5 ml-auto">
+              {hasApplied && (
+                <Button variant="outline" size="sm" className="h-9" onClick={handleClear} data-testid="button-clear">
+                  <X className="w-3.5 h-3.5 mr-1.5" />
+                  Clear
+                </Button>
               )}
-            </TableBody>
-          </Table>
-        </div>
+              <Button size="sm" className="h-9 px-5 shadow-sm" onClick={handleSearch} data-testid="button-search">
+                <Search className="w-3.5 h-3.5 mr-1.5" />
+                Search
+              </Button>
+            </div>
+          </div>
+        </CardContent>
       </Card>
+
+      {/* Results */}
+      {!hasApplied ? (
+        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+          <Search className="w-12 h-12 mb-4 opacity-10" />
+          <p className="text-sm font-medium">Set your filters and click Search to load records</p>
+        </div>
+      ) : (
+        <Card className="shadow-sm border-muted overflow-hidden">
+          {/* Results header */}
+          <div className="px-5 py-3 border-b bg-muted/20 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold capitalize">{applied.docType}</span>
+              {applied.dateFrom && applied.dateTo && (
+                <span className="text-xs text-muted-foreground font-mono">
+                  {formatDate(applied.dateFrom)} – {formatDate(applied.dateTo)}
+                </span>
+              )}
+              {applied.invoiceNumber && (
+                <Badge variant="outline" className="text-xs font-mono">{applied.invoiceNumber}</Badge>
+              )}
+            </div>
+            {!isLoading && (
+              <span className="text-xs text-muted-foreground">
+                {applied.docType === "invoices"
+                  ? `${invoices?.length ?? 0} record${invoices?.length === 1 ? "" : "s"}`
+                  : `${deposits?.length ?? 0} record${deposits?.length === 1 ? "" : "s"}`}
+              </span>
+            )}
+          </div>
+
+          {isLoading ? (
+            <div className="h-40 flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : applied.docType === "invoices" ? (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[130px]">Invoice No.</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Issue Date</TableHead>
+                  <TableHead>Due Date</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="w-[110px] text-center">Status</TableHead>
+                  <TableHead className="w-[80px]" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!invoices || invoices.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="h-40 text-center">
+                      <div className="flex flex-col items-center text-muted-foreground">
+                        <FileText className="w-8 h-8 mb-2 opacity-20" />
+                        <p className="text-sm">No invoices found for this search</p>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  invoices.map(inv => (
+                    <InvoiceRow
+                      key={inv.id}
+                      invoice={inv}
+                      statusColors={invoiceStatusColors}
+                    />
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[110px]">Date</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="w-[100px] text-center">Status</TableHead>
+                  <TableHead className="w-[90px] text-center">Source</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!deposits || deposits.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-40 text-center">
+                      <div className="flex flex-col items-center text-muted-foreground">
+                        <ArrowDownRight className="w-8 h-8 mb-2 opacity-20" />
+                        <p className="text-sm">No deposits found for this search</p>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  deposits.map(dep => (
+                    <TableRow key={dep.id} data-testid={`row-deposit-${dep.id}`}>
+                      <TableCell className="text-xs font-mono text-muted-foreground">
+                        {formatDate(dep.transactionDate)}
+                      </TableCell>
+                      <TableCell className="font-semibold text-sm">{dep.description}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{dep.category || "—"}</TableCell>
+                      <TableCell className="text-right font-bold tabular-nums text-emerald-600">
+                        +{formatCurrency(dep.amount)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border bg-blue-50 text-blue-700 border-blue-200">
+                          {dep.status}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className="text-[10px] uppercase font-mono px-1.5 h-5">
+                          {dep.source}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </Card>
+      )}
     </div>
   )
 }
 
-function InvoiceRow({ invoice }: { invoice: Invoice }) {
+// ─── Invoice Row ─────────────────────────────────────────────────────────────
+
+function InvoiceRow({
+  invoice,
+  statusColors,
+}: {
+  invoice: Invoice
+  statusColors: Record<string, string>
+}) {
   const queryClient = useQueryClient()
   const deleteInv = useDeleteInvoice()
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
-
-  const statusColors: Record<string, string> = {
-    draft: "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400",
-    sent: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400",
-    paid: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400",
-    overdue: "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-400",
-    cancelled: "bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-500"
-  }
 
   const handleDelete = () => {
     deleteInv.mutate({ id: invoice.id }, {
@@ -161,34 +344,46 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
         toast({ title: "Deleted", description: `Invoice ${invoice.invoiceNumber} deleted.` })
         queryClient.invalidateQueries({ queryKey: getListInvoicesQueryKey() })
         setIsDeleteOpen(false)
-      }
+      },
     })
   }
 
   return (
     <>
-      <TableRow className="group">
+      <TableRow className="group" data-testid={`row-invoice-${invoice.id}`}>
         <TableCell className="font-mono text-xs font-semibold">{invoice.invoiceNumber}</TableCell>
         <TableCell>
-          <p className="font-semibold">{invoice.customerName}</p>
-          <p className="text-xs text-muted-foreground">{invoice.customerEmail}</p>
+          <p className="font-semibold text-sm">{invoice.customerName}</p>
+          {invoice.customerEmail && (
+            <p className="text-xs text-muted-foreground">{invoice.customerEmail}</p>
+          )}
         </TableCell>
-        <TableCell className="text-muted-foreground text-xs">{formatDate(invoice.issueDate)}</TableCell>
-        <TableCell className="text-muted-foreground text-xs">{invoice.dueDate ? formatDate(invoice.dueDate) : '-'}</TableCell>
-        <TableCell className="text-right font-bold tabular-nums tracking-tight">
-          {formatCurrency(invoice.amount)}
+        <TableCell className="text-xs text-muted-foreground">{formatDate(invoice.issueDate)}</TableCell>
+        <TableCell className="text-xs text-muted-foreground">
+          {invoice.dueDate ? formatDate(invoice.dueDate) : "—"}
         </TableCell>
+        <TableCell className="text-right font-bold tabular-nums">{formatCurrency(invoice.amount)}</TableCell>
         <TableCell className="text-center">
-          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${statusColors[invoice.status] || ''}`}>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${statusColors[invoice.status] ?? ""}`}>
             {invoice.status}
           </span>
         </TableCell>
         <TableCell>
           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => setIsEditOpen(true)}>
+            <Button
+              variant="ghost" size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-primary"
+              onClick={() => setIsEditOpen(true)}
+              data-testid={`button-edit-invoice-${invoice.id}`}
+            >
               <Edit className="w-3.5 h-3.5" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => setIsDeleteOpen(true)}>
+            <Button
+              variant="ghost" size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+              onClick={() => setIsDeleteOpen(true)}
+              data-testid={`button-delete-invoice-${invoice.id}`}
+            >
               <Trash2 className="w-3.5 h-3.5" />
             </Button>
           </div>
@@ -208,12 +403,12 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground my-4">
-            Are you sure you want to delete invoice <strong className="text-foreground">{invoice.invoiceNumber}</strong>? This action cannot be undone.
+            Delete <strong className="text-foreground">{invoice.invoiceNumber}</strong>? This cannot be undone.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsDeleteOpen(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={deleteInv.isPending}>
-              {deleteInv.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+            <Button variant="destructive" onClick={handleDelete} disabled={deleteInv.isPending} data-testid="button-confirm-delete">
+              {deleteInv.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
               Delete
             </Button>
           </DialogFooter>
@@ -223,53 +418,56 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
   )
 }
 
+// ─── Create Invoice Dialog ───────────────────────────────────────────────────
+
 function CreateInvoiceDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
   const createInv = useCreateInvoice()
-  
-  const [formData, setFormData] = useState({
-    invoiceNumber: `INV-${Math.floor(Math.random()*10000)}`,
+  const [form, setForm] = useState({
+    invoiceNumber: `INV-${String(Math.floor(Math.random() * 9000) + 1000)}`,
     customerName: "",
     customerEmail: "",
-    amount: "0.00",
-    issueDate: new Date().toISOString().split('T')[0],
+    description: "",
+    amount: "",
+    issueDate: "",
     dueDate: "",
-    status: InvoiceStatus.draft as typeof InvoiceStatus[keyof typeof InvoiceStatus]
+    status: "draft" as typeof InvoiceStatus[keyof typeof InvoiceStatus],
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    createInv.mutate({ 
+    createInv.mutate({
       data: {
-        ...formData,
-        amount: parseFloat(formData.amount),
-      }
+        ...form,
+        amount: parseFloat(form.amount),
+        customerEmail: form.customerEmail || undefined,
+        description: form.description || undefined,
+        dueDate: form.dueDate || undefined,
+      },
     }, {
       onSuccess: () => {
-        toast({ title: "Success", description: "Invoice created successfully." })
+        toast({ title: "Invoice created" })
         queryClient.invalidateQueries({ queryKey: getListInvoicesQueryKey() })
         onClose()
-      }
+      },
     })
   }
 
   return (
     <DialogContent>
       <DialogHeader>
-        <DialogTitle>Create Invoice</DialogTitle>
+        <DialogTitle>New Invoice</DialogTitle>
       </DialogHeader>
-      <form onSubmit={handleSubmit} className="space-y-4 mt-4">
-        <div className="grid grid-cols-2 gap-4">
+      <form onSubmit={handleSubmit} className="space-y-4 mt-2">
+        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-muted-foreground">Invoice Number</label>
-            <Input required value={formData.invoiceNumber} onChange={e => setFormData({...formData, invoiceNumber: e.target.value})} />
+            <label className="text-xs font-semibold text-muted-foreground">Invoice No.</label>
+            <Input required value={form.invoiceNumber} onChange={e => setForm(f => ({ ...f, invoiceNumber: e.target.value }))} data-testid="input-invoice-no" />
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground">Status</label>
-            <Select value={formData.status} onValueChange={(v: any) => setFormData({...formData, status: v})}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+            <Select value={form.status} onValueChange={(v: typeof form.status) => setForm(f => ({ ...f, status: v }))}>
+              <SelectTrigger data-testid="select-status"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.values(InvoiceStatus).map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
@@ -278,23 +476,31 @@ function CreateInvoiceDialog({ onClose }: { onClose: () => void }) {
         </div>
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-muted-foreground">Customer Name</label>
-          <Input required value={formData.customerName} onChange={e => setFormData({...formData, customerName: e.target.value})} />
+          <Input required value={form.customerName} onChange={e => setForm(f => ({ ...f, customerName: e.target.value }))} data-testid="input-customer-name" />
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-muted-foreground">Issue Date</label>
-            <Input type="date" required value={formData.issueDate} onChange={e => setFormData({...formData, issueDate: e.target.value})} />
-          </div>
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground">Customer Email</label>
+          <Input type="email" value={form.customerEmail} onChange={e => setForm(f => ({ ...f, customerEmail: e.target.value }))} data-testid="input-customer-email" />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground">Amount ($)</label>
-            <Input type="number" step="0.01" min="0" required value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} />
+            <Input type="number" step="0.01" min="0" required value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} data-testid="input-amount" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground">Issue Date</label>
+            <Input type="date" required value={form.issueDate} onChange={e => setForm(f => ({ ...f, issueDate: e.target.value }))} data-testid="input-issue-date" />
           </div>
         </div>
-        <DialogFooter className="mt-6 pt-4 border-t">
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground">Due Date</label>
+          <Input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} data-testid="input-due-date" />
+        </div>
+        <DialogFooter className="pt-4 border-t mt-4">
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={createInv.isPending}>
+          <Button type="submit" disabled={createInv.isPending} data-testid="button-submit-invoice">
             {createInv.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-            Save Invoice
+            Create Invoice
           </Button>
         </DialogFooter>
       </form>
@@ -302,159 +508,74 @@ function CreateInvoiceDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-function EditInvoiceDialog({ invoice, onClose }: { invoice: Invoice, onClose: () => void }) {
+// ─── Edit Invoice Dialog ─────────────────────────────────────────────────────
+
+function EditInvoiceDialog({ invoice, onClose }: { invoice: Invoice; onClose: () => void }) {
   const queryClient = useQueryClient()
   const updateInv = useUpdateInvoice()
-  
-  const [formData, setFormData] = useState({
+  const [form, setForm] = useState({
     customerName: invoice.customerName,
-    amount: invoice.amount.toString(),
-    status: invoice.status as typeof InvoiceStatus[keyof typeof InvoiceStatus]
+    amount: String(invoice.amount),
+    status: invoice.status as typeof InvoiceStatus[keyof typeof InvoiceStatus],
+    dueDate: invoice.dueDate?.split("T")[0] ?? "",
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    updateInv.mutate({ 
+    updateInv.mutate({
       id: invoice.id,
       data: {
-        customerName: formData.customerName,
-        amount: parseFloat(formData.amount),
-        status: formData.status
-      }
+        customerName: form.customerName,
+        amount: parseFloat(form.amount),
+        status: form.status,
+        dueDate: form.dueDate || undefined,
+      },
     }, {
       onSuccess: () => {
-        toast({ title: "Updated", description: "Invoice updated successfully." })
+        toast({ title: "Invoice updated" })
         queryClient.invalidateQueries({ queryKey: getListInvoicesQueryKey() })
         onClose()
-      }
+      },
     })
   }
 
   return (
     <DialogContent>
       <DialogHeader>
-        <DialogTitle>Edit Invoice {invoice.invoiceNumber}</DialogTitle>
+        <DialogTitle>Edit {invoice.invoiceNumber}</DialogTitle>
       </DialogHeader>
-      <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+      <form onSubmit={handleSubmit} className="space-y-4 mt-2">
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-muted-foreground">Customer Name</label>
-          <Input required value={formData.customerName} onChange={e => setFormData({...formData, customerName: e.target.value})} />
+          <Input required value={form.customerName} onChange={e => setForm(f => ({ ...f, customerName: e.target.value }))} />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground">Amount ($)</label>
-            <Input type="number" step="0.01" min="0" required value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} />
+            <Input type="number" step="0.01" min="0" required value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground">Status</label>
-            <Select value={formData.status} onValueChange={(v: any) => setFormData({...formData, status: v})}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+            <Select value={form.status} onValueChange={(v: typeof form.status) => setForm(f => ({ ...f, status: v }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.values(InvoiceStatus).map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
         </div>
-        <DialogFooter className="mt-6 pt-4 border-t">
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground">Due Date</label>
+          <Input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
+        </div>
+        <DialogFooter className="pt-4 border-t mt-4">
           <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={updateInv.isPending}>
             {updateInv.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-            Update Changes
+            Save Changes
           </Button>
         </DialogFooter>
       </form>
-    </DialogContent>
-  )
-}
-
-function BulkUploadDialog({ onClose }: { onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const [file, setFile] = useState<File | null>(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [results, setResults] = useState<{created: number, failed: number, errors: string[]} | null>(null)
-
-  const handleUpload = async () => {
-    if (!file) return
-    setIsUploading(true)
-    setResults(null)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await fetch('/api/invoices/bulk-upload', {
-        method: 'POST',
-        body: formData
-      })
-      if (!res.ok) throw new Error("Upload failed")
-      const data = await res.json()
-      setResults(data)
-      queryClient.invalidateQueries({ queryKey: getListInvoicesQueryKey() })
-      toast({ title: "Upload Complete", description: `Created ${data.created} invoices.` })
-    } catch (err) {
-      toast({ title: "Error", description: "Failed to upload file.", variant: "destructive" })
-    } finally {
-      setIsUploading(false)
-    }
-  }
-
-  return (
-    <DialogContent>
-      <DialogHeader>
-        <DialogTitle>Bulk Upload Invoices</DialogTitle>
-      </DialogHeader>
-      
-      {!results ? (
-        <div className="space-y-6 mt-4">
-          <div className="border-2 border-dashed border-muted rounded-xl p-8 text-center hover:bg-muted/10 transition-colors">
-            <UploadCloud className="w-10 h-10 text-muted-foreground mx-auto mb-4 opacity-50" />
-            <Input 
-              type="file" 
-              accept=".csv,.xlsx" 
-              className="max-w-[250px] mx-auto"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-            <p className="text-xs text-muted-foreground mt-4">Accepts .csv and .xlsx files.</p>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button onClick={handleUpload} disabled={!file || isUploading}>
-              {isUploading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Download className="w-4 h-4 mr-2" />}
-              Start Import
-            </Button>
-          </DialogFooter>
-        </div>
-      ) : (
-        <div className="space-y-6 mt-4 text-center">
-          <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <CheckCircle2 className="w-8 h-8" />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold tracking-tight mb-2">Import Successful</h3>
-            <div className="flex justify-center gap-8 text-sm">
-              <div className="flex flex-col">
-                <span className="text-2xl font-bold text-emerald-600">{results.created}</span>
-                <span className="text-muted-foreground">Created</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-2xl font-bold text-rose-600">{results.failed}</span>
-                <span className="text-muted-foreground">Failed</span>
-              </div>
-            </div>
-          </div>
-          {results.errors?.length > 0 && (
-            <div className="bg-rose-50 text-rose-800 text-xs p-4 rounded text-left max-h-32 overflow-auto">
-              <p className="font-bold mb-1">Errors:</p>
-              <ul className="list-disc pl-4 space-y-1">
-                {results.errors.map((e, i) => <li key={i}>{e}</li>)}
-              </ul>
-            </div>
-          )}
-          <DialogFooter>
-            <Button onClick={onClose} className="w-full">Done</Button>
-          </DialogFooter>
-        </div>
-      )}
     </DialogContent>
   )
 }

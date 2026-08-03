@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { db, invoicesTable } from "@workspace/db";
-import { eq, ilike, or, sql } from "drizzle-orm";
+import { and, between, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 import {
   ListInvoicesQueryParams,
   CreateInvoiceBody,
@@ -38,22 +38,39 @@ function serializeInvoice(inv: Record<string, unknown>) {
 // GET /invoices
 router.get("/invoices", async (req, res): Promise<void> => {
   const queryParams = ListInvoicesQueryParams.safeParse(req.query);
-  const { status, search } = queryParams.success ? queryParams.data : { status: undefined, search: undefined };
+  const { status, search, invoiceNumber, dateFrom, dateTo } = queryParams.success
+    ? queryParams.data
+    : { status: undefined, search: undefined, invoiceNumber: undefined, dateFrom: undefined, dateTo: undefined };
 
-  let query = db.select().from(invoicesTable).$dynamic();
+  const conditions = [];
 
   if (status && status !== "all") {
-    query = query.where(eq(invoicesTable.status, status));
-  } else if (search) {
-    query = query.where(
+    conditions.push(eq(invoicesTable.status, status));
+  }
+  if (search) {
+    conditions.push(
       or(
         ilike(invoicesTable.customerName, `%${search}%`),
         ilike(invoicesTable.invoiceNumber, `%${search}%`)
-      )
+      )!
     );
   }
+  if (invoiceNumber) {
+    conditions.push(ilike(invoicesTable.invoiceNumber, `%${invoiceNumber}%`));
+  }
+  if (dateFrom) {
+    conditions.push(gte(invoicesTable.issueDate, dateFrom));
+  }
+  if (dateTo) {
+    conditions.push(lte(invoicesTable.issueDate, dateTo));
+  }
 
-  const invoices = await query.orderBy(sql`${invoicesTable.createdAt} DESC`);
+  let query = db.select().from(invoicesTable).$dynamic();
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions));
+  }
+
+  const invoices = await query.orderBy(sql`${invoicesTable.issueDate} DESC`);
   res.json(ListInvoicesResponse.parse(invoices.map(serializeInvoice)));
 });
 

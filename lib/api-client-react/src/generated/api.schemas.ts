@@ -519,6 +519,9 @@ error?: string;
 export type ListInvoicesParams = {
 status?: string;
 search?: string;
+invoiceNumber?: string;
+dateFrom?: string;
+dateTo?: string;
 };
 
 export type ListApiRequestsParams = {
@@ -533,5 +536,8 @@ export type ListTransactionsParams = {
 source?: string;
 status?: string;
 search?: string;
+type?: string;
+dateFrom?: string;
+dateTo?: string;
 };
 

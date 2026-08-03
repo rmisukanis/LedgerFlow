@@ -10,4 +10,7 @@ export type ListTransactionsParams = {
 source?: string;
 status?: string;
 search?: string;
+type?: string;
+dateFrom?: string;
+dateTo?: string;
 };

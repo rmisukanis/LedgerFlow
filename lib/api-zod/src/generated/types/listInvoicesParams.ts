@@ -9,4 +9,7 @@
 export type ListInvoicesParams = {
 status?: string;
 search?: string;
+invoiceNumber?: string;
+dateFrom?: string;
+dateTo?: string;
 };

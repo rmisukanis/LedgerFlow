@@ -72,7 +72,10 @@ export const DisconnectQbResponse = zod.object({
  */
 export const ListInvoicesQueryParams = zod.object({
   "status": zod.coerce.string().optional(),
-  "search": zod.coerce.string().optional()
+  "search": zod.coerce.string().optional(),
+  "invoiceNumber": zod.coerce.string().optional(),
+  "dateFrom": zod.coerce.string().optional(),
+  "dateTo": zod.coerce.string().optional()
 })
 
 export const ListInvoicesResponseItem = zod.object({
@@ -473,7 +476,10 @@ export const DeleteApiCollectionResponse = zod.void()
 export const ListTransactionsQueryParams = zod.object({
   "source": zod.coerce.string().optional(),
   "status": zod.coerce.string().optional(),
-  "search": zod.coerce.string().optional()
+  "search": zod.coerce.string().optional(),
+  "type": zod.coerce.string().optional(),
+  "dateFrom": zod.coerce.string().optional(),
+  "dateTo": zod.coerce.string().optional()
 })
 
 export const ListTransactionsResponseItem = zod.object({

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, transactionsTable } from "@workspace/db";
-import { eq, ilike, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, lte, sql } from "drizzle-orm";
 import {
   ListTransactionsQueryParams,
   CreateTransactionBody,
@@ -35,13 +35,18 @@ function serializeTransaction(t: Record<string, unknown>) {
 // GET /transactions
 router.get("/transactions", async (req, res): Promise<void> => {
   const queryParams = ListTransactionsQueryParams.safeParse(req.query);
-  const { source, status, search } = queryParams.success ? queryParams.data : {};
+  const { source, status, search, type, dateFrom, dateTo } = queryParams.success ? queryParams.data : {};
+
+  const conditions = [];
+  if (source) conditions.push(eq(transactionsTable.source, source));
+  if (status) conditions.push(eq(transactionsTable.status, status));
+  if (type) conditions.push(eq(transactionsTable.type, type));
+  if (search) conditions.push(ilike(transactionsTable.description, `%${search}%`));
+  if (dateFrom) conditions.push(gte(transactionsTable.transactionDate, dateFrom));
+  if (dateTo) conditions.push(lte(transactionsTable.transactionDate, dateTo));
 
   let query = db.select().from(transactionsTable).$dynamic();
-
-  if (source) query = query.where(eq(transactionsTable.source, source));
-  else if (status) query = query.where(eq(transactionsTable.status, status));
-  else if (search) query = query.where(ilike(transactionsTable.description, `%${search}%`));
+  if (conditions.length > 0) query = query.where(and(...conditions));
 
   const transactions = await query.orderBy(sql`${transactionsTable.transactionDate} DESC`);
   res.json(ListTransactionsResponse.parse(transactions.map(t => serializeTransaction(t as unknown as Record<string, unknown>))));
