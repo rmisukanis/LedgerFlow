@@ -29,6 +29,30 @@ export interface QbAuthUrl {
   url: string;
 }
 
+export interface QbInvoice {
+  id: string;
+  docNumber: string;
+  customerName: string;
+  /** @nullable */
+  customerEmail?: string | null;
+  amount: number;
+  balance: number;
+  status: string;
+  txnDate: string;
+  /** @nullable */
+  dueDate?: string | null;
+}
+
+export interface QbDeposit {
+  id: string;
+  amount: number;
+  txnDate: string;
+  /** @nullable */
+  accountName?: string | null;
+  /** @nullable */
+  memo?: string | null;
+}
+
 export type InvoiceStatus = typeof InvoiceStatus[keyof typeof InvoiceStatus];
 
 
@@ -514,6 +538,17 @@ code?: string;
 state?: string;
 realmId?: string;
 error?: string;
+};
+
+export type ListQbInvoicesParams = {
+invoiceNumber?: string;
+dateFrom?: string;
+dateTo?: string;
+};
+
+export type ListQbDepositsParams = {
+dateFrom?: string;
+dateTo?: string;
 };
 
 export type ListInvoicesParams = {

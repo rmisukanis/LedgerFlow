@@ -56,6 +56,47 @@ export const HandleQbCallbackResponse = zod.object({
 
 
 /**
+ * @summary Search invoices in QuickBooks
+ */
+export const ListQbInvoicesQueryParams = zod.object({
+  "invoiceNumber": zod.coerce.string().optional(),
+  "dateFrom": zod.coerce.string().optional(),
+  "dateTo": zod.coerce.string().optional()
+})
+
+export const ListQbInvoicesResponseItem = zod.object({
+  "id": zod.string(),
+  "docNumber": zod.string(),
+  "customerName": zod.string(),
+  "customerEmail": zod.string().nullish(),
+  "amount": zod.number(),
+  "balance": zod.number(),
+  "status": zod.string(),
+  "txnDate": zod.string(),
+  "dueDate": zod.string().nullish()
+})
+export const ListQbInvoicesResponse = zod.array(ListQbInvoicesResponseItem)
+
+
+/**
+ * @summary Search deposits in QuickBooks
+ */
+export const ListQbDepositsQueryParams = zod.object({
+  "dateFrom": zod.coerce.string().optional(),
+  "dateTo": zod.coerce.string().optional()
+})
+
+export const ListQbDepositsResponseItem = zod.object({
+  "id": zod.string(),
+  "amount": zod.number(),
+  "txnDate": zod.string(),
+  "accountName": zod.string().nullish(),
+  "memo": zod.string().nullish()
+})
+export const ListQbDepositsResponse = zod.array(ListQbDepositsResponseItem)
+
+
+/**
  * @summary Disconnect QuickBooks
  */
 export const DisconnectQbResponse = zod.object({

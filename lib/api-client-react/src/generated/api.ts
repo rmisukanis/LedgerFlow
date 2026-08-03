@@ -39,8 +39,12 @@ import type {
   InvoiceUpdate,
   ListApiRequestsParams,
   ListInvoicesParams,
+  ListQbDepositsParams,
+  ListQbInvoicesParams,
   ListTransactionsParams,
   QbAuthUrl,
+  QbDeposit,
+  QbInvoice,
   QbStatus,
   Transaction,
   TransactionImportInput,
@@ -379,6 +383,174 @@ export function useHandleQbCallback<TData = Awaited<ReturnType<typeof handleQbCa
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getHandleQbCallbackQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getListQbInvoicesUrl = (params?: ListQbInvoicesParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/qb/invoices?${stringifiedParams}` : `/api/qb/invoices`
+}
+
+/**
+ * @summary Search invoices in QuickBooks
+ */
+export const listQbInvoices = async (params?: ListQbInvoicesParams, options?: Parameters<typeof customFetch>[1]): Promise<QbInvoice[]> => {
+
+  return customFetch<QbInvoice[]>(getListQbInvoicesUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListQbInvoicesQueryKey = (params?: ListQbInvoicesParams,) => {
+    return [
+    `/api/qb/invoices`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListQbInvoicesQueryOptions = <TData = Awaited<ReturnType<typeof listQbInvoices>>, TError = ErrorType<ErrorResponse>>(params?: ListQbInvoicesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listQbInvoices>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListQbInvoicesQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listQbInvoices>>> = ({ signal }) => listQbInvoices(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listQbInvoices>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListQbInvoicesQueryResult = NonNullable<Awaited<ReturnType<typeof listQbInvoices>>>
+export type ListQbInvoicesQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Search invoices in QuickBooks
+ */
+
+export function useListQbInvoices<TData = Awaited<ReturnType<typeof listQbInvoices>>, TError = ErrorType<ErrorResponse>>(
+ params?: ListQbInvoicesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listQbInvoices>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListQbInvoicesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getListQbDepositsUrl = (params?: ListQbDepositsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/qb/deposits?${stringifiedParams}` : `/api/qb/deposits`
+}
+
+/**
+ * @summary Search deposits in QuickBooks
+ */
+export const listQbDeposits = async (params?: ListQbDepositsParams, options?: Parameters<typeof customFetch>[1]): Promise<QbDeposit[]> => {
+
+  return customFetch<QbDeposit[]>(getListQbDepositsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListQbDepositsQueryKey = (params?: ListQbDepositsParams,) => {
+    return [
+    `/api/qb/deposits`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListQbDepositsQueryOptions = <TData = Awaited<ReturnType<typeof listQbDeposits>>, TError = ErrorType<ErrorResponse>>(params?: ListQbDepositsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listQbDeposits>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListQbDepositsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listQbDeposits>>> = ({ signal }) => listQbDeposits(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listQbDeposits>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListQbDepositsQueryResult = NonNullable<Awaited<ReturnType<typeof listQbDeposits>>>
+export type ListQbDepositsQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary Search deposits in QuickBooks
+ */
+
+export function useListQbDeposits<TData = Awaited<ReturnType<typeof listQbDeposits>>, TError = ErrorType<ErrorResponse>>(
+ params?: ListQbDepositsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listQbDeposits>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListQbDepositsQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

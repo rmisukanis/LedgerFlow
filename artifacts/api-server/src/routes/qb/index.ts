@@ -1,8 +1,16 @@
 import { Router, type IRouter } from "express";
 import OAuthClient from "intuit-oauth";
 import { db, qbTokensTable } from "@workspace/db";
-import { createOAuthClient, getStoredToken, isConnected } from "../../lib/qb-client";
-import { GetQbStatusResponse, GetQbAuthUrlResponse, DisconnectQbResponse } from "@workspace/api-zod";
+import { createOAuthClient, getStoredToken, isConnected, queryQuickBooks, escapeQbString, QbNotConnectedError, QbUpstreamError } from "../../lib/qb-client";
+import {
+  GetQbStatusResponse,
+  GetQbAuthUrlResponse,
+  DisconnectQbResponse,
+  ListQbInvoicesQueryParams,
+  ListQbInvoicesResponse,
+  ListQbDepositsQueryParams,
+  ListQbDepositsResponse,
+} from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
@@ -89,6 +97,120 @@ router.get("/qb/auth/callback", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "QuickBooks OAuth callback failed");
     res.redirect("/?qb_error=callback_failed");
+  }
+});
+
+// GET /qb/invoices — search invoices in QuickBooks
+router.get("/qb/invoices", async (req, res): Promise<void> => {
+  const parsed = ListQbInvoicesQueryParams.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { invoiceNumber, dateFrom, dateTo } = parsed.data;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if ((dateFrom && !DATE_RE.test(dateFrom)) || (dateTo && !DATE_RE.test(dateTo))) {
+    res.status(400).json({ error: "Dates must be in YYYY-MM-DD format" });
+    return;
+  }
+  if (invoiceNumber && invoiceNumber.length > 50) {
+    res.status(400).json({ error: "Invoice number too long" });
+    return;
+  }
+
+  const conditions: string[] = [];
+  if (invoiceNumber) conditions.push(`DocNumber = '${escapeQbString(invoiceNumber)}'`);
+  if (dateFrom) conditions.push(`TxnDate >= '${escapeQbString(dateFrom)}'`);
+  if (dateTo) conditions.push(`TxnDate <= '${escapeQbString(dateTo)}'`);
+
+  const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+  const query = `SELECT * FROM Invoice${where} ORDERBY TxnDate DESC MAXRESULTS 100`;
+
+  try {
+    req.log.info({ query }, "Querying QuickBooks invoices");
+    const queryResponse = await queryQuickBooks(query);
+    const rawInvoices = (queryResponse.Invoice as Record<string, unknown>[]) ?? [];
+
+    const invoices = rawInvoices.map((inv) => {
+      const customerRef = (inv.CustomerRef as Record<string, unknown>) ?? {};
+      const billEmail = (inv.BillEmail as Record<string, unknown>) ?? {};
+      const balance = Number(inv.Balance ?? 0);
+      const total = Number(inv.TotalAmt ?? 0);
+      return {
+        id: String(inv.Id),
+        docNumber: String(inv.DocNumber ?? ""),
+        customerName: String(customerRef.name ?? "Unknown"),
+        customerEmail: (billEmail.Address as string) ?? null,
+        amount: total,
+        balance,
+        status: balance === 0 ? "paid" : balance < total ? "partial" : "open",
+        txnDate: String(inv.TxnDate ?? ""),
+        dueDate: (inv.DueDate as string) ?? null,
+      };
+    });
+
+    res.json(ListQbInvoicesResponse.parse(invoices));
+  } catch (err) {
+    req.log.error({ err }, "QuickBooks invoice query failed");
+    if (err instanceof QbNotConnectedError) {
+      res.status(401).json({ error: "QuickBooks connection expired — please reconnect from the Dashboard." });
+    } else if (err instanceof QbUpstreamError) {
+      res.status(502).json({ error: `QuickBooks request failed: ${err.message}` });
+    } else {
+      res.status(500).json({ error: "Unexpected error querying QuickBooks" });
+    }
+  }
+});
+
+// GET /qb/deposits — search deposits in QuickBooks
+router.get("/qb/deposits", async (req, res): Promise<void> => {
+  const parsed = ListQbDepositsQueryParams.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { dateFrom, dateTo } = parsed.data;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if ((dateFrom && !DATE_RE.test(dateFrom)) || (dateTo && !DATE_RE.test(dateTo))) {
+    res.status(400).json({ error: "Dates must be in YYYY-MM-DD format" });
+    return;
+  }
+
+  const conditions: string[] = [];
+  if (dateFrom) conditions.push(`TxnDate >= '${escapeQbString(dateFrom)}'`);
+  if (dateTo) conditions.push(`TxnDate <= '${escapeQbString(dateTo)}'`);
+
+  const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+  const query = `SELECT * FROM Deposit${where} ORDERBY TxnDate DESC MAXRESULTS 100`;
+
+  try {
+    req.log.info({ query }, "Querying QuickBooks deposits");
+    const queryResponse = await queryQuickBooks(query);
+    const rawDeposits = (queryResponse.Deposit as Record<string, unknown>[]) ?? [];
+
+    const deposits = rawDeposits.map((dep) => {
+      const accountRef = (dep.DepositToAccountRef as Record<string, unknown>) ?? {};
+      return {
+        id: String(dep.Id),
+        amount: Number(dep.TotalAmt ?? 0),
+        txnDate: String(dep.TxnDate ?? ""),
+        accountName: (accountRef.name as string) ?? null,
+        memo: (dep.PrivateNote as string) ?? null,
+      };
+    });
+
+    res.json(ListQbDepositsResponse.parse(deposits));
+  } catch (err) {
+    req.log.error({ err }, "QuickBooks deposit query failed");
+    if (err instanceof QbNotConnectedError) {
+      res.status(401).json({ error: "QuickBooks connection expired — please reconnect from the Dashboard." });
+    } else if (err instanceof QbUpstreamError) {
+      res.status(502).json({ error: `QuickBooks request failed: ${err.message}` });
+    } else {
+      res.status(500).json({ error: "Unexpected error querying QuickBooks" });
+    }
   }
 });
 

@@ -98,6 +98,75 @@ paths:
               schema:
                 $ref: "#/components/schemas/QbStatus"
 
+  /qb/invoices:
+    get:
+      operationId: listQbInvoices
+      tags: [quickbooks]
+      summary: Search invoices in QuickBooks
+      parameters:
+        - name: invoiceNumber
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching QuickBooks invoices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QbInvoice"
+        "400":
+          description: QuickBooks not connected or query failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /qb/deposits:
+    get:
+      operationId: listQbDeposits
+      tags: [quickbooks]
+      summary: Search deposits in QuickBooks
+      parameters:
+        - name: dateFrom
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching QuickBooks deposits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QbDeposit"
+        "400":
+          description: QuickBooks not connected or query failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /qb/auth/disconnect:
     delete:
       operationId: disconnectQb
@@ -726,6 +795,44 @@ components:
       properties:
         url:
           type: string
+
+    QbInvoice:
+      type: object
+      required: [id, docNumber, customerName, amount, balance, status, txnDate]
+      properties:
+        id:
+          type: string
+        docNumber:
+          type: string
+        customerName:
+          type: string
+        customerEmail:
+          type: ["string", "null"]
+        amount:
+          type: number
+        balance:
+          type: number
+        status:
+          type: string
+        txnDate:
+          type: string
+        dueDate:
+          type: ["string", "null"]
+
+    QbDeposit:
+      type: object
+      required: [id, amount, txnDate]
+      properties:
+        id:
+          type: string
+        amount:
+          type: number
+        txnDate:
+          type: string
+        accountName:
+          type: ["string", "null"]
+        memo:
+          type: ["string", "null"]
 
     # ─── Invoices ─────────────────────────────────────────────────────────
     Invoice:
