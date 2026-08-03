@@ -49,38 +49,32 @@ export default function InvoicesPage() {
 
   const hasApplied = applied !== null
 
-  // Only fetch once the user hits Search
+  // Only fetch once the user hits Search — Orval's natural key includes params,
+  // so it changes whenever filters change and triggers a fresh fetch automatically.
+  const invoiceParams = hasApplied && applied?.docType === "invoices"
+    ? {
+        dateFrom: applied.dateFrom || undefined,
+        dateTo: applied.dateTo || undefined,
+        invoiceNumber: applied.invoiceNumber || undefined,
+      }
+    : undefined
+
+  const depositParams = hasApplied && applied?.docType === "deposits"
+    ? {
+        type: "income" as const,
+        dateFrom: applied.dateFrom || undefined,
+        dateTo: applied.dateTo || undefined,
+      }
+    : undefined
+
   const { data: invoices, isLoading: loadingInvoices, isFetching: fetchingInvoices } = useListInvoices(
-    {
-      dateFrom: applied?.dateFrom || undefined,
-      dateTo: applied?.dateTo || undefined,
-      invoiceNumber: applied?.invoiceNumber || undefined,
-    },
-    {
-      query: {
-        enabled: hasApplied && applied?.docType === "invoices",
-        queryKey: [
-          "invoices-search",
-          applied?.dateFrom,
-          applied?.dateTo,
-          applied?.invoiceNumber,
-        ],
-      },
-    }
+    invoiceParams,
+    { query: { enabled: !!invoiceParams } }
   )
 
   const { data: deposits, isLoading: loadingDeposits, isFetching: fetchingDeposits } = useListTransactions(
-    {
-      type: "income",
-      dateFrom: applied?.dateFrom || undefined,
-      dateTo: applied?.dateTo || undefined,
-    },
-    {
-      query: {
-        enabled: hasApplied && applied?.docType === "deposits",
-        queryKey: ["deposits-search", applied?.dateFrom, applied?.dateTo],
-      },
-    }
+    depositParams,
+    { query: { enabled: !!depositParams } }
   )
 
   const isLoading =
