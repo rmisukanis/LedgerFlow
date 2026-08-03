@@ -3,20 +3,30 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Business Suite API — QuickBooks manager, API Explorer, Financial Intelligence
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: quickbooks
+    description: QuickBooks OAuth and connection management
+  - name: invoices
+    description: Invoice CRUD and bulk upload
+  - name: api-explorer
+    description: Saved API requests and execution
+  - name: api-collections
+    description: API request collections
+  - name: transactions
+    description: Financial transaction management
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +34,1081 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ─── QuickBooks OAuth ────────────────────────────────────────────────────
+  /qb/status:
+    get:
+      operationId: getQbStatus
+      tags: [quickbooks]
+      summary: Get QuickBooks connection status
+      responses:
+        "200":
+          description: Connection status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QbStatus"
+
+  /qb/auth/url:
+    get:
+      operationId: getQbAuthUrl
+      tags: [quickbooks]
+      summary: Get QuickBooks OAuth authorization URL
+      responses:
+        "200":
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QbAuthUrl"
+
+  /qb/auth/callback:
+    get:
+      operationId: handleQbCallback
+      tags: [quickbooks]
+      summary: Handle QuickBooks OAuth callback
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: realmId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect after OAuth
+        "200":
+          description: Callback result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QbStatus"
+
+  /qb/auth/disconnect:
+    delete:
+      operationId: disconnectQb
+      tags: [quickbooks]
+      summary: Disconnect QuickBooks
+      responses:
+        "200":
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QbStatus"
+
+  # ─── Invoices ────────────────────────────────────────────────────────────
+  /invoices:
+    get:
+      operationId: listInvoices
+      tags: [invoices]
+      summary: List all invoices
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of invoices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Invoice"
+    post:
+      operationId: createInvoice
+      tags: [invoices]
+      summary: Create an invoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoiceInput"
+      responses:
+        "201":
+          description: Invoice created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /invoices/summary:
+    get:
+      operationId: getInvoiceSummary
+      tags: [invoices]
+      summary: Get invoice dashboard summary
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceSummary"
+
+  /invoices/bulk-upload:
+    post:
+      operationId: bulkUploadInvoices
+      tags: [invoices]
+      summary: Bulk upload invoices from Excel/CSV
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkUploadResult"
+        "400":
+          description: Parse error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /invoices/{id}:
+    get:
+      operationId: getInvoice
+      tags: [invoices]
+      summary: Get an invoice by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateInvoice
+      tags: [invoices]
+      summary: Update an invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoiceUpdate"
+      responses:
+        "200":
+          description: Updated invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteInvoice
+      tags: [invoices]
+      summary: Delete an invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── API Explorer ─────────────────────────────────────────────────────────
+  /api-requests:
+    get:
+      operationId: listApiRequests
+      tags: [api-explorer]
+      summary: List saved API requests
+      parameters:
+        - name: collectionId
+          in: query
+          required: false
+          schema:
+            type: ["number", "null"]
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of saved API requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiRequest"
+    post:
+      operationId: createApiRequest
+      tags: [api-explorer]
+      summary: Save a new API request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiRequestInput"
+      responses:
+        "201":
+          description: Saved request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiRequest"
+
+  /api-requests/{id}:
+    get:
+      operationId: getApiRequest
+      tags: [api-explorer]
+      summary: Get a saved API request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: API request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiRequest"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateApiRequest
+      tags: [api-explorer]
+      summary: Update a saved API request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiRequestUpdate"
+      responses:
+        "200":
+          description: Updated request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiRequest"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteApiRequest
+      tags: [api-explorer]
+      summary: Delete a saved API request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api-requests/{id}/run:
+    post:
+      operationId: runApiRequest
+      tags: [api-explorer]
+      summary: Execute a saved API request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiRunOverride"
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiRunResult"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api-requests/run:
+    post:
+      operationId: runAdHocRequest
+      tags: [api-explorer]
+      summary: Execute an ad-hoc API request without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiRunInput"
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiRunResult"
+
+  # ─── API Collections ──────────────────────────────────────────────────────
+  /api-collections:
+    get:
+      operationId: listApiCollections
+      tags: [api-collections]
+      summary: List API request collections
+      responses:
+        "200":
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiCollection"
+    post:
+      operationId: createApiCollection
+      tags: [api-collections]
+      summary: Create a new collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiCollectionInput"
+      responses:
+        "201":
+          description: Created collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiCollection"
+
+  /api-collections/{id}:
+    patch:
+      operationId: updateApiCollection
+      tags: [api-collections]
+      summary: Update a collection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiCollectionUpdate"
+      responses:
+        "200":
+          description: Updated collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiCollection"
+    delete:
+      operationId: deleteApiCollection
+      tags: [api-collections]
+      summary: Delete a collection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "204":
+          description: Deleted
+
+  # ─── Transactions ─────────────────────────────────────────────────────────
+  /transactions:
+    get:
+      operationId: listTransactions
+      tags: [transactions]
+      summary: List transactions
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+    post:
+      operationId: createTransaction
+      tags: [transactions]
+      summary: Create a transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionInput"
+      responses:
+        "201":
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+
+  /transactions/summary:
+    get:
+      operationId: getTransactionSummary
+      tags: [transactions]
+      summary: Get transaction summary stats
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionSummary"
+
+  /transactions/import:
+    post:
+      operationId: importTransactions
+      tags: [transactions]
+      summary: Import transactions from file or QuickBooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionImportInput"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkUploadResult"
+
+  /transactions/{id}:
+    get:
+      operationId: getTransaction
+      tags: [transactions]
+      summary: Get a transaction by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateTransaction
+      tags: [transactions]
+      summary: Update a transaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionUpdate"
+      responses:
+        "200":
+          description: Updated transaction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteTransaction
+      tags: [transactions]
+      summary: Delete a transaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    # ─── QuickBooks ───────────────────────────────────────────────────────
+    QbStatus:
+      type: object
+      required: [connected]
+      properties:
+        connected:
+          type: boolean
+        companyName:
+          type: ["string", "null"]
+        companyId:
+          type: ["string", "null"]
+        expiresAt:
+          type: ["string", "null"]
+        connectedAt:
+          type: ["string", "null"]
+
+    QbAuthUrl:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+
+    # ─── Invoices ─────────────────────────────────────────────────────────
+    Invoice:
+      type: object
+      required: [id, invoiceNumber, customerName, amount, status, issueDate, createdAt]
+      properties:
+        id:
+          type: number
+        invoiceNumber:
+          type: string
+        customerName:
+          type: string
+        customerEmail:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        amount:
+          type: number
+        taxAmount:
+          type: ["number", "null"]
+        status:
+          type: string
+          enum: [draft, sent, paid, overdue, cancelled]
+        issueDate:
+          type: string
+        dueDate:
+          type: ["string", "null"]
+        qbInvoiceId:
+          type: ["string", "null"]
+        qbSyncedAt:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    InvoiceInput:
+      type: object
+      required: [invoiceNumber, customerName, amount, issueDate]
+      properties:
+        invoiceNumber:
+          type: string
+        customerName:
+          type: string
+        customerEmail:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+        taxAmount:
+          type: number
+        status:
+          type: string
+          enum: [draft, sent, paid, overdue, cancelled]
+        issueDate:
+          type: string
+        dueDate:
+          type: string
+
+    InvoiceUpdate:
+      type: object
+      properties:
+        invoiceNumber:
+          type: string
+        customerName:
+          type: string
+        customerEmail:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+        taxAmount:
+          type: number
+        status:
+          type: string
+          enum: [draft, sent, paid, overdue, cancelled]
+        issueDate:
+          type: string
+        dueDate:
+          type: string
+
+    InvoiceSummary:
+      type: object
+      required: [total, totalAmount, paid, paidAmount, overdue, overdueAmount, draft, sent]
+      properties:
+        total:
+          type: number
+        totalAmount:
+          type: number
+        paid:
+          type: number
+        paidAmount:
+          type: number
+        overdue:
+          type: number
+        overdueAmount:
+          type: number
+        draft:
+          type: number
+        sent:
+          type: number
+
+    BulkUploadResult:
+      type: object
+      required: [created, failed, errors]
+      properties:
+        created:
+          type: number
+        updated:
+          type: number
+        failed:
+          type: number
+        errors:
+          type: array
+          items:
+            type: string
+
+    # ─── API Explorer ─────────────────────────────────────────────────────
+    ApiRequest:
+      type: object
+      required: [id, name, method, url, createdAt]
+      properties:
+        id:
+          type: number
+        name:
+          type: string
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+        url:
+          type: string
+        headers:
+          type: ["string", "null"]
+          description: JSON string of header key-value pairs
+        queryParams:
+          type: ["string", "null"]
+          description: JSON string of query param key-value pairs
+        body:
+          type: ["string", "null"]
+          description: Request body as string
+        bodyType:
+          type: string
+          enum: [none, json, form, raw]
+        codeSnippet:
+          type: ["string", "null"]
+          description: Code snippet for this request
+        language:
+          type: string
+          enum: [javascript, python, curl, typescript]
+        collectionId:
+          type: ["number", "null"]
+        lastRunAt:
+          type: ["string", "null"]
+        lastStatusCode:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ApiRequestInput:
+      type: object
+      required: [name, method, url]
+      properties:
+        name:
+          type: string
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+        url:
+          type: string
+        headers:
+          type: string
+        queryParams:
+          type: string
+        body:
+          type: string
+        bodyType:
+          type: string
+          enum: [none, json, form, raw]
+        codeSnippet:
+          type: string
+        language:
+          type: string
+          enum: [javascript, python, curl, typescript]
+        collectionId:
+          type: number
+
+    ApiRequestUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+        url:
+          type: string
+        headers:
+          type: string
+        queryParams:
+          type: string
+        body:
+          type: string
+        bodyType:
+          type: string
+          enum: [none, json, form, raw]
+        codeSnippet:
+          type: string
+        language:
+          type: string
+          enum: [javascript, python, curl, typescript]
+        collectionId:
+          type: ["number", "null"]
+
+    ApiRunOverride:
+      type: object
+      properties:
+        headers:
+          type: string
+        queryParams:
+          type: string
+        body:
+          type: string
+
+    ApiRunInput:
+      type: object
+      required: [method, url]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+        url:
+          type: string
+        headers:
+          type: string
+        queryParams:
+          type: string
+        body:
+          type: string
+        bodyType:
+          type: string
+          enum: [none, json, form, raw]
+
+    ApiRunResult:
+      type: object
+      required: [statusCode, statusText, responseTime, responseBody, responseHeaders]
+      properties:
+        statusCode:
+          type: number
+        statusText:
+          type: string
+        responseTime:
+          type: number
+          description: Response time in milliseconds
+        responseBody:
+          type: string
+        responseHeaders:
+          type: string
+          description: JSON string of response headers
+
+    ApiCollection:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id:
+          type: number
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ApiCollectionInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+    ApiCollectionUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+    # ─── Transactions ─────────────────────────────────────────────────────
+    Transaction:
+      type: object
+      required: [id, description, amount, type, source, transactionDate, status, createdAt]
+      properties:
+        id:
+          type: number
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [income, expense, transfer]
+        category:
+          type: ["string", "null"]
+        source:
+          type: string
+          enum: [manual, quickbooks, excel, import]
+        externalId:
+          type: ["string", "null"]
+        transactionDate:
+          type: string
+        status:
+          type: string
+          enum: [pending, cleared, reconciled, flagged]
+        notes:
+          type: ["string", "null"]
+        aiFlags:
+          type: ["string", "null"]
+          description: JSON string of AI-identified issues
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    TransactionInput:
+      type: object
+      required: [description, amount, type, transactionDate]
+      properties:
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [income, expense, transfer]
+        category:
+          type: string
+        source:
+          type: string
+          enum: [manual, quickbooks, excel, import]
+        externalId:
+          type: string
+        transactionDate:
+          type: string
+        status:
+          type: string
+          enum: [pending, cleared, reconciled, flagged]
+        notes:
+          type: string
+
+    TransactionUpdate:
+      type: object
+      properties:
+        description:
+          type: string
+        amount:
+          type: number
+        type:
+          type: string
+          enum: [income, expense, transfer]
+        category:
+          type: string
+        transactionDate:
+          type: string
+        status:
+          type: string
+          enum: [pending, cleared, reconciled, flagged]
+        notes:
+          type: string
+        aiFlags:
+          type: string
+
+    TransactionSummary:
+      type: object
+      required: [totalIncome, totalExpenses, netAmount, pending, flagged, bySource]
+      properties:
+        totalIncome:
+          type: number
+        totalExpenses:
+          type: number
+        netAmount:
+          type: number
+        pending:
+          type: number
+        flagged:
+          type: number
+        bySource:
+          type: array
+          items:
+            type: object
+            required: [source, count, amount]
+            properties:
+              source:
+                type: string
+              count:
+                type: number
+              amount:
+                type: number
+
+    TransactionImportInput:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+          enum: [quickbooks, excel]
+        data:
+          type: string
+          description: JSON array of transaction data when source is excel
