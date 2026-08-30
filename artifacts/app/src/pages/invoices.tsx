@@ -101,9 +101,9 @@ export default function InvoicesPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">Records</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">CRUD</h1>
           <p className="text-muted-foreground mt-1">
-            Search your QuickBooks invoices and deposits by date range or invoice number.
+            Create, read, update, and delete your QuickBooks records.
           </p>
         </div>
         {qbConnected && (
@@ -119,7 +119,7 @@ export default function InvoicesPage() {
           <CardContent className="p-4 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
             <p className="text-sm text-amber-800">
-              QuickBooks is not connected. Go to the Dashboard and connect your QuickBooks account to search records.
+              QuickBooks is not connected. Connect your QuickBooks account before searching records.
             </p>
           </CardContent>
         </Card>

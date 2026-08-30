@@ -4,9 +4,8 @@ description: Overall structure of the 3-module business productivity suite
 ---
 
 ## Modules
-1. **QuickBooks Manager** — invoice CRUD + bulk Excel upload + QB OAuth
+1. **QuickBooks CRUD** — QuickBooks invoice and deposit search with OAuth
 2. **API Explorer** — Postman-like request runner with saved collections
-3. **Financial Intelligence** — transaction CRUD with AI flags shell
 
 ## Monorepo layout
 - `artifacts/app` — React/Vite frontend, port via `$PORT`, preview at `/`
@@ -23,9 +22,7 @@ description: Overall structure of the 3-module business productivity suite
 `intuit-oauth`, `multer`, `xlsx`, `@types/multer`
 
 ## Frontend pages
-- `/` — Dashboard (`src/pages/dashboard.tsx`)
-- `/invoices` — Invoice Manager (`src/pages/invoices.tsx`)
+- `/` and `/crud` — QuickBooks CRUD (`src/pages/invoices.tsx`)
 - `/api-explorer` — API Explorer (`src/pages/api-explorer.tsx`)
-- `/financial` — Financial Intelligence (`src/pages/financial.tsx`)
 
 **Why:** Single-artifact approach keeps routing simple and avoids cross-artifact auth complexity.

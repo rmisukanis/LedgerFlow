@@ -1,4 +1,4 @@
-- [Business Suite architecture](business-suite.md) — 3-module app: QB Manager, API Explorer, Financial Intelligence; monorepo with shared DB and API client libs
+- [Business Suite architecture](business-suite.md) — streamlined app with QuickBooks CRUD and API Explorer; monorepo with shared DB and API client libs
 - [QB OAuth token storage](qb-oauth.md) — intuit-oauth v4, tokens in qb_tokens table, auto-refresh on each request; redirect URI must be registered in Intuit Dev Portal
 - [Orval codegen quirks](orval-codegen-quirks.md) — query key helpers are double-prefixed (getGetFooQueryKey not getFooQueryKey); integer fields must be `type: number` not `type: integer`; no multipart in spec (use raw fetch for file uploads)
 - [API server restart quirk](api-server-restart.md) — dev workflow does not hot-reload route edits; restart before debugging. Pino logs strip query strings.

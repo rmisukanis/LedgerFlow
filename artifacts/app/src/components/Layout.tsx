@@ -1,10 +1,8 @@
 import React from "react"
 import { Link, useLocation } from "wouter"
 import { 
-  LayoutDashboard, 
   FileText, 
   Network, 
-  LineChart, 
   LogOut,
   Hexagon
 } from "lucide-react"
@@ -18,10 +16,8 @@ export function Layout({ children }: LayoutProps) {
   const [location] = useLocation()
 
   const navItems = [
-    { name: "Dashboard", href: "/", icon: LayoutDashboard },
-    { name: "Invoices", href: "/invoices", icon: FileText },
+    { name: "CRUD", href: "/crud", icon: FileText },
     { name: "API Explorer", href: "/api-explorer", icon: Network },
-    { name: "Financial Intelligence", href: "/financial", icon: LineChart },
   ]
 
   return (
