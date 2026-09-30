@@ -44,7 +44,11 @@ export default function ApiExplorerPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch(`${API}/catalog`).then(r => r.json()).then(setCatalog).catch(() => setError("Could not load the QuickBooks catalog."))
+    fetch(`${API}/catalog`).then(r => r.json()).then((c: Entry[]) => {
+      setCatalog(c)
+      const e = c.find(x => x.method === "GET" && x.folder === "Invoice") ?? c[0]
+      if (e) { setMethod(e.method); setFolder(e.folder); setOpKey(e.name); setQuery(e.query); setBody(e.body) }
+    }).catch(() => setError("Could not load the QuickBooks catalog."))
   }, [])
 
   const methods = useMemo(() => [...new Set(catalog.map(e => e.method))], [catalog])
