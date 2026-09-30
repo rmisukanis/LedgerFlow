@@ -1,344 +1,200 @@
-import { useState } from "react"
-import {
-  Search, X, FileText, ArrowDownRight, Loader2, AlertCircle,
-} from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { Loader2, Send, AlertCircle } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { toast } from "@/hooks/use-toast"
-import { formatCurrency, formatDate } from "@/lib/utils"
+import { useGetQbStatus } from "@workspace/api-client-react"
 
-import {
-  listQbInvoices,
-  listQbDeposits,
-  useGetQbStatus,
-  QbInvoice,
-  QbDeposit,
-} from "@workspace/api-client-react"
-
-type DocType = "invoices" | "deposits"
-
-interface Filters {
-  docType: DocType
-  dateFrom: string
-  dateTo: string
-  invoiceNumber: string
+interface Entry {
+  folder: string
+  name: string
+  method: string
+  path: string
+  query: string
+  body: string
+  contentType: string
+  description: string
 }
 
-const EMPTY_FILTERS: Filters = {
-  docType: "invoices",
-  dateFrom: "",
-  dateTo: "",
-  invoiceNumber: "",
+interface RunResult {
+  status: number
+  ms: number
+  url: string
+  data: unknown
 }
 
-const qbStatusColors: Record<string, string> = {
-  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  partial: "bg-amber-50 text-amber-700 border-amber-200",
-  open: "bg-blue-50 text-blue-700 border-blue-200",
-}
+const API = `${import.meta.env.BASE_URL}api/qb/explorer`
 
-export default function InvoicesPage() {
-  const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS)
-  const [applied, setApplied] = useState<Filters | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [invoices, setInvoices] = useState<QbInvoice[] | null>(null)
-  const [deposits, setDeposits] = useState<QbDeposit[] | null>(null)
-  const [searchError, setSearchError] = useState<string | null>(null)
-
+export default function ApiExplorerPage() {
   const { data: qbStatus } = useGetQbStatus()
   const qbConnected = qbStatus?.connected ?? false
 
-  const hasApplied = applied !== null
+  const [catalog, setCatalog] = useState<Entry[]>([])
+  const [method, setMethod] = useState("GET")
+  const [folder, setFolder] = useState("")
+  const [opKey, setOpKey] = useState("")
+  const [id, setId] = useState("")
+  const [query, setQuery] = useState("")
+  const [body, setBody] = useState("")
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<RunResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleSearch = async () => {
-    const filters = { ...draft }
-    setApplied(filters)
-    setIsLoading(true)
-    setSearchError(null)
+  useEffect(() => {
+    fetch(`${API}/catalog`).then(r => r.json()).then(setCatalog).catch(() => setError("Could not load the QuickBooks catalog."))
+  }, [])
+
+  const methods = useMemo(() => [...new Set(catalog.map(e => e.method))], [catalog])
+  const folders = useMemo(
+    () => [...new Set(catalog.filter(e => e.method === method).map(e => e.folder))],
+    [catalog, method],
+  )
+  const ops = useMemo(() => catalog.filter(e => e.method === method && e.folder === folder), [catalog, method, folder])
+  const entry = ops.find(o => o.name === opKey)
+  const needsId = entry?.path.includes("{id}") ?? false
+  const resolvedPath = entry ? entry.path.replace("{id}", id || "{id}") : ""
+
+  const pick = (e: Entry | undefined) => {
+    setOpKey(e?.name ?? "")
+    setQuery(e?.query ?? "")
+    setBody(e?.body ?? "")
+    setId("")
+    setResult(null)
+  }
+
+  const onMethod = (m: string) => {
+    setMethod(m)
+    const f = catalog.find(e => e.method === m && e.folder === folder)?.folder ?? ""
+    setFolder(f)
+    pick(undefined)
+  }
+  const onFolder = (f: string) => {
+    setFolder(f)
+    pick(catalog.find(e => e.method === method && e.folder === f))
+  }
+
+  const run = async () => {
+    if (!entry) return
+    setRunning(true)
+    setError(null)
     try {
-      if (filters.docType === "invoices") {
-        const data = await listQbInvoices({
-          invoiceNumber: filters.invoiceNumber || undefined,
-          dateFrom: filters.dateFrom || undefined,
-          dateTo: filters.dateTo || undefined,
-        })
-        setInvoices(data)
-        setDeposits(null)
-      } else {
-        const data = await listQbDeposits({
-          dateFrom: filters.dateFrom || undefined,
-          dateTo: filters.dateTo || undefined,
-        })
-        setDeposits(data)
-        setInvoices(null)
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not reach QuickBooks."
-      setSearchError(message)
-      setInvoices(null)
-      setDeposits(null)
-      toast({ title: "Search failed", description: message, variant: "destructive" })
+      const r = await fetch(`${API}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method: entry.method, path: resolvedPath, query, body, contentType: entry.contentType }),
+      })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error ?? "Request failed")
+      setResult(j)
+    } catch (e) {
+      setResult(null)
+      setError(e instanceof Error ? e.message : "Request failed")
     } finally {
-      setIsLoading(false)
+      setRunning(false)
     }
   }
 
-  const handleClear = () => {
-    setDraft(EMPTY_FILTERS)
-    setApplied(null)
-    setInvoices(null)
-    setDeposits(null)
-    setSearchError(null)
-  }
+  const label = "text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 
   return (
-    <div className="space-y-6 pb-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {/* Header */}
+    <div className="space-y-6 pb-12">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">API Explorer</h1>
-          <p className="text-muted-foreground mt-1">
-            Search QuickBooks records by date range or document number.
-          </p>
+          <h1 className="text-3xl font-bold tracking-tight">API Explorer</h1>
+          <p className="text-muted-foreground mt-1">Pick a method, entity and operation from your QuickBooks Postman collection.</p>
         </div>
         {qbConnected && (
-          <Badge variant="outline" className="shrink-0 text-emerald-700 border-emerald-200 bg-emerald-50">
-            QuickBooks connected
-          </Badge>
+          <Badge variant="outline" className="text-emerald-700 border-emerald-200 bg-emerald-50">QuickBooks connected</Badge>
         )}
       </div>
 
-      {/* Not-connected warning */}
       {!qbConnected && (
         <Card className="border-amber-200 bg-amber-50">
           <CardContent className="p-4 flex items-center gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
-            <p className="text-sm text-amber-800">
-              QuickBooks is not connected. Connect your QuickBooks account before searching records.
-            </p>
+            <AlertCircle className="w-5 h-5 text-amber-600" />
+            <p className="text-sm text-amber-800">QuickBooks is not connected.</p>
           </CardContent>
         </Card>
       )}
 
-      {/* Filter Bar */}
-      <Card className="shadow-sm border-muted">
-        <CardContent className="p-5">
+      <Card>
+        <CardContent className="p-5 space-y-4">
           <div className="flex flex-wrap gap-3 items-end">
-            {/* Document Type */}
-            <div className="space-y-1.5 min-w-[160px]">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Document Type</label>
-              <Select
-                value={draft.docType}
-                onValueChange={(v: DocType) => setDraft(d => ({ ...d, docType: v, invoiceNumber: "" }))}
-              >
-                <SelectTrigger className="h-9 bg-background" data-testid="select-doc-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="invoices">Invoices</SelectItem>
-                  <SelectItem value="deposits">Deposits</SelectItem>
-                </SelectContent>
+            <div className="space-y-1.5 w-[110px]">
+              <label className={label}>Method</label>
+              <Select value={method} onValueChange={onMethod}>
+                <SelectTrigger data-testid="select-method"><SelectValue /></SelectTrigger>
+                <SelectContent>{methods.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-
-            {/* Date From */}
-            <div className="space-y-1.5 min-w-[150px]">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date From</label>
-              <Input
-                type="date"
-                value={draft.dateFrom}
-                onChange={e => setDraft(d => ({ ...d, dateFrom: e.target.value }))}
-                className="h-9 bg-background"
-                data-testid="input-date-from"
-              />
+            <div className="space-y-1.5 w-[200px]">
+              <label className={label}>Entity</label>
+              <Select value={folder} onValueChange={onFolder}>
+                <SelectTrigger data-testid="select-entity"><SelectValue placeholder="Select entity" /></SelectTrigger>
+                <SelectContent>{folders.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
-
-            {/* Date To */}
-            <div className="space-y-1.5 min-w-[150px]">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date To</label>
-              <Input
-                type="date"
-                value={draft.dateTo}
-                onChange={e => setDraft(d => ({ ...d, dateTo: e.target.value }))}
-                className="h-9 bg-background"
-                data-testid="input-date-to"
-              />
+            <div className="space-y-1.5 w-[200px]">
+              <label className={label}>Operation</label>
+              <Select value={opKey} onValueChange={v => pick(ops.find(o => o.name === v))} disabled={!folder}>
+                <SelectTrigger data-testid="select-operation"><SelectValue placeholder="Select operation" /></SelectTrigger>
+                <SelectContent>{ops.map(o => <SelectItem key={o.name} value={o.name}>{o.name}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
-
-            {/* Invoice Number — invoices only */}
-            {draft.docType === "invoices" && (
-              <div className="space-y-1.5 min-w-[160px]">
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Document Number</label>
-                <Input
-                  placeholder="e.g. 1012"
-                  value={draft.invoiceNumber}
-                  onChange={e => setDraft(d => ({ ...d, invoiceNumber: e.target.value }))}
-                  className="h-9 bg-background"
-                  data-testid="input-invoice-number"
-                />
+            {needsId && (
+              <div className="space-y-1.5 w-[160px]">
+                <label className={label}>Id</label>
+                <Input value={id} onChange={e => setId(e.target.value)} placeholder="QuickBooks Id" data-testid="input-id" />
               </div>
             )}
-
-            {/* Actions */}
-            <div className="flex gap-2 pb-0.5 ml-auto">
-              {hasApplied && (
-                <Button variant="outline" size="sm" className="h-9" onClick={handleClear} data-testid="button-clear">
-                  <X className="w-3.5 h-3.5 mr-1.5" />
-                  Clear
-                </Button>
-              )}
-              <Button
-                size="sm"
-                className="h-9 px-5 shadow-sm"
-                onClick={handleSearch}
-                disabled={!qbConnected || isLoading}
-                data-testid="button-search"
-              >
-                {isLoading
-                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                  : <Search className="w-3.5 h-3.5 mr-1.5" />}
-                Search
-              </Button>
-            </div>
+            <Button className="ml-auto" onClick={run} disabled={!qbConnected || !entry || running || (needsId && !id)} data-testid="button-send">
+              {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send
+            </Button>
           </div>
+
+          {entry && (
+            <>
+              <div className="flex items-center gap-2 font-mono text-sm bg-muted/40 rounded px-3 py-2 break-all">
+                <Badge>{entry.method}</Badge>
+                <span>/v3/company/{"{realmId}"}{resolvedPath}{query ? `?${query}` : ""}</span>
+              </div>
+              {entry.description && <p className="text-xs text-muted-foreground">{entry.description}</p>}
+              <div className="space-y-1.5">
+                <label className={label}>Query params</label>
+                <Input value={query} onChange={e => setQuery(e.target.value)} className="font-mono text-xs" />
+              </div>
+              {entry.method === "POST" && (
+                <div className="space-y-1.5">
+                  <label className={label}>Body</label>
+                  <textarea
+                    value={body}
+                    onChange={e => setBody(e.target.value)}
+                    rows={8}
+                    className="w-full rounded-md border bg-background p-3 font-mono text-xs"
+                    data-testid="input-body"
+                  />
+                </div>
+              )}
+            </>
+          )}
         </CardContent>
       </Card>
 
-      {/* Results */}
-      {!hasApplied ? (
-        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <Search className="w-12 h-12 mb-4 opacity-10" />
-          <p className="text-sm font-medium">Set your filters and click Search to load records from QuickBooks</p>
-        </div>
-      ) : searchError ? (
-        <Card className="border-rose-200">
-          <CardContent className="p-8 flex flex-col items-center text-center gap-2">
-            <AlertCircle className="w-8 h-8 text-rose-500" />
-            <p className="text-sm font-semibold text-foreground">QuickBooks search failed</p>
-            <p className="text-sm text-muted-foreground max-w-md">{searchError}</p>
-          </CardContent>
-        </Card>
-      ) : (
-        <Card className="shadow-sm border-muted overflow-hidden">
-          {/* Results header */}
-          <div className="px-5 py-3 border-b bg-muted/20 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold capitalize">{applied.docType}</span>
-              {applied.dateFrom && applied.dateTo && (
-                <span className="text-xs text-muted-foreground font-mono">
-                  {formatDate(applied.dateFrom)} – {formatDate(applied.dateTo)}
-                </span>
-              )}
-              {applied.invoiceNumber && (
-                <Badge variant="outline" className="text-xs font-mono">{applied.invoiceNumber}</Badge>
-              )}
-            </div>
-            {!isLoading && (
-              <span className="text-xs text-muted-foreground">
-                {applied.docType === "invoices"
-                  ? `${invoices?.length ?? 0} record${invoices?.length === 1 ? "" : "s"}`
-                  : `${deposits?.length ?? 0} record${deposits?.length === 1 ? "" : "s"}`}
-              </span>
-            )}
-          </div>
+      {error && <p className="text-sm text-rose-600">{error}</p>}
 
-          {isLoading ? (
-            <div className="h-40 flex items-center justify-center">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : applied.docType === "invoices" ? (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[120px]">Document Number</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Due Date</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                  <TableHead className="w-[100px] text-center">Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {!invoices || invoices.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="h-40 text-center">
-                      <div className="flex flex-col items-center text-muted-foreground">
-                        <FileText className="w-8 h-8 mb-2 opacity-20" />
-                        <p className="text-sm">No invoices found in QuickBooks for this search</p>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  invoices.map(inv => (
-                    <TableRow key={inv.id} data-testid={`row-invoice-${inv.id}`}>
-                      <TableCell className="font-mono text-xs font-semibold">{inv.docNumber}</TableCell>
-                      <TableCell>
-                        <p className="font-semibold text-sm">{inv.customerName}</p>
-                        {inv.customerEmail && (
-                          <p className="text-xs text-muted-foreground">{inv.customerEmail}</p>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{formatDate(inv.txnDate)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {inv.dueDate ? formatDate(inv.dueDate) : "—"}
-                      </TableCell>
-                      <TableCell className="text-right font-bold tabular-nums">{formatCurrency(inv.amount)}</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(inv.balance)}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${qbStatusColors[inv.status] ?? "bg-slate-100 text-slate-600 border-slate-200"}`}>
-                          {inv.status}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[110px]">Date</TableHead>
-                  <TableHead>Deposited To</TableHead>
-                  <TableHead>Memo</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {!deposits || deposits.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={4} className="h-40 text-center">
-                      <div className="flex flex-col items-center text-muted-foreground">
-                        <ArrowDownRight className="w-8 h-8 mb-2 opacity-20" />
-                        <p className="text-sm">No deposits found in QuickBooks for this search</p>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  deposits.map(dep => (
-                    <TableRow key={dep.id} data-testid={`row-deposit-${dep.id}`}>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        {formatDate(dep.txnDate)}
-                      </TableCell>
-                      <TableCell className="font-semibold text-sm">{dep.accountName ?? "—"}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{dep.memo ?? "—"}</TableCell>
-                      <TableCell className="text-right font-bold tabular-nums text-emerald-600">
-                        +{formatCurrency(dep.amount)}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          )}
+      {result && (
+        <Card>
+          <div className="px-5 py-3 border-b flex items-center gap-3 text-sm">
+            <Badge variant="outline" className={result.status < 300 ? "text-emerald-700" : "text-rose-700"}>{result.status}</Badge>
+            <span className="text-muted-foreground">{result.ms} ms</span>
+          </div>
+          <pre className="p-5 text-xs font-mono overflow-auto max-h-[500px]" data-testid="text-response">
+            {typeof result.data === "string" ? result.data : JSON.stringify(result.data, null, 2)}
+          </pre>
         </Card>
       )}
     </div>
