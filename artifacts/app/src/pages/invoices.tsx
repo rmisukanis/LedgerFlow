@@ -101,9 +101,9 @@ export default function InvoicesPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">CRUD</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">API Explorer</h1>
           <p className="text-muted-foreground mt-1">
-            Create, read, update, and delete your QuickBooks records.
+            Search QuickBooks records by date range or document number.
           </p>
         </div>
         {qbConnected && (
@@ -173,7 +173,7 @@ export default function InvoicesPage() {
             {/* Invoice Number — invoices only */}
             {draft.docType === "invoices" && (
               <div className="space-y-1.5 min-w-[160px]">
-                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Invoice No.</label>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Document Number</label>
                 <Input
                   placeholder="e.g. 1012"
                   value={draft.invoiceNumber}
@@ -255,7 +255,7 @@ export default function InvoicesPage() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[120px]">Invoice No.</TableHead>
+                  <TableHead className="w-[120px]">Document Number</TableHead>
                   <TableHead>Customer</TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Due Date</TableHead>

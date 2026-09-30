@@ -1,28 +1,10 @@
 ---
-name: Business Suite architecture
-description: Overall structure of the 3-module business productivity suite
+name: Business Suite direction
+description: Product consolidation and the intended collection-driven QuickBooks explorer
 ---
 
-## Modules
-1. **QuickBooks CRUD** — QuickBooks invoice and deposit search with OAuth
-2. **API Explorer** — Postman-like request runner with saved collections
+The user wants the QuickBooks records view to be the API Explorer, not a separate CRUD module beside a generic request runner.
 
-## Monorepo layout
-- `artifacts/app` — React/Vite frontend, port via `$PORT`, preview at `/`
-- `artifacts/api-server` — Express 5 backend, port 8080, mounted at `/api`
-- `lib/db` — Drizzle ORM schema + migrations (PostgreSQL)
-- `lib/api-spec` — OpenAPI spec (`openapi.yaml`)
-- `lib/api-client-react` — Orval-generated React Query hooks
-- `lib/api-zod` — Orval-generated Zod schemas
+**Why:** They want a simpler Postman-like experience selecting method, entity, and operation from supplied Postman collections.
 
-## DB tables
-`invoices`, `qb_tokens`, `api_collections`, `api_requests`, `transactions`
-
-## Key packages on api-server
-`intuit-oauth`, `multer`, `xlsx`, `@types/multer`
-
-## Frontend pages
-- `/` and `/crud` — QuickBooks CRUD (`src/pages/invoices.tsx`)
-- `/api-explorer` — API Explorer (`src/pages/api-explorer.tsx`)
-
-**Why:** Single-artifact approach keeps routing simple and avoids cross-artifact auth complexity.
+**How to apply:** Keep future collection-driven operations in the existing explorer. Do not restore the removed Dashboard, Financial Intelligence, or old generic explorer without a new request. Importing collections and building operation dropdowns requires the collections and further implementation; the rename alone does not supply that behavior.

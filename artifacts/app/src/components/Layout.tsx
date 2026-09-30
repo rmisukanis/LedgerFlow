@@ -1,7 +1,6 @@
 import React from "react"
 import { Link, useLocation } from "wouter"
 import { 
-  FileText, 
   Network, 
   LogOut,
   Hexagon
@@ -16,7 +15,6 @@ export function Layout({ children }: LayoutProps) {
   const [location] = useLocation()
 
   const navItems = [
-    { name: "CRUD", href: "/crud", icon: FileText },
     { name: "API Explorer", href: "/api-explorer", icon: Network },
   ]
 
@@ -33,7 +31,7 @@ export function Layout({ children }: LayoutProps) {
 
         <nav className="flex-1 px-4 space-y-1">
           {navItems.map((item) => {
-            const isActive = location === item.href
+            const isActive = ["/", "/crud", "/invoices", item.href].includes(location)
             return (
               <Link 
                 key={item.name} 

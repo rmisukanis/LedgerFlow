@@ -4,8 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { Layout } from '@/components/Layout';
-import Crud from '@/pages/invoices';
-import ApiExplorer from '@/pages/api-explorer';
+import ApiExplorer from '@/pages/invoices';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,9 +19,9 @@ function Router() {
   return (
     <Layout>
       <Switch>
-        <Route path="/" component={Crud} />
-        <Route path="/crud" component={Crud} />
-        <Route path="/invoices" component={Crud} />
+        <Route path="/" component={ApiExplorer} />
+        <Route path="/crud" component={ApiExplorer} />
+        <Route path="/invoices" component={ApiExplorer} />
         <Route path="/api-explorer" component={ApiExplorer} />
         <Route component={NotFound} />
       </Switch>
