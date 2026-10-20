@@ -36,7 +36,7 @@ router.post("/qb/explorer/run", async (req, res): Promise<void> => {
       status: e.authResponse?.response?.status ?? 502,
       ms: Date.now() - started,
       url,
-      data: e.authResponse?.json ?? e.authResponse?.body ?? { error: e.message },
+      data: e.authResponse?.json ?? e.authResponse?.body ?? { error: e.message, detail: (err as { description?: string }).description },
     });
   }
 });

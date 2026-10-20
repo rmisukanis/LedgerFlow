@@ -48,7 +48,7 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   const line: Obj = { Amount: Number(get("Line.Amount")) }
   if (get("Line.Description")) line.Description = get("Line.Description")
   if (entity === "Bill") {
-    line.DetailType = "AccountBasedExpenseLine"
+    line.DetailType = "AccountBasedExpenseLineDetail"
     line.AccountBasedExpenseLineDetail = { AccountRef: { value: get("Line.AccountRef") } }
   } else {
     line.DetailType = "SalesItemLineDetail"
@@ -361,13 +361,17 @@ export default function BatchBuilderPage() {
       {records.length > 0 && (
         <Card>
           <div className="px-5 py-3 border-b flex items-center justify-between">
-            <span className="text-sm font-semibold">Preview — {records.length} {entity} record{records.length === 1 ? "" : "s"}</span>
+            <span className="text-sm font-semibold">Batch JSON preview — {records.length} {entity} record{records.length === 1 ? "" : "s"} (sent 30 per request)</span>
             <Button onClick={send} disabled={sending || problems.length > 0} data-testid="button-send-batch">
               {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
               Send to QuickBooks
             </Button>
           </div>
-          <pre className="p-5 text-xs font-mono overflow-auto max-h-[400px]">{JSON.stringify(records, null, 2)}</pre>
+          <pre className="p-5 text-xs font-mono overflow-auto max-h-[400px]">{JSON.stringify(
+            { BatchItemRequest: records.map((r, j) => ({ bId: String(j + 1), operation: "create", [entity]: r })) },
+            null,
+            2,
+          )}</pre>
         </Card>
       )}
 
