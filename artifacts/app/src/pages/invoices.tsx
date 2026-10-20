@@ -161,9 +161,10 @@ export default function ApiExplorerPage() {
           </div>
 
           {entry && (
-            <>
-              <div className="flex items-center gap-2 font-mono text-sm bg-muted/40 rounded px-3 py-2 break-all">
-                <Badge>{entry.method}</Badge>
+            <div className="rounded-md border bg-muted/20 p-4 space-y-4" data-testid="request-preview">
+              <div className={label}>Request preview</div>
+              <div className="flex items-start gap-2 font-mono text-sm break-all">
+                <Badge className="shrink-0">{entry.method}</Badge>
                 <span>/v3/company/{"{realmId}"}{resolvedPath}{query ? `?${query}` : ""}</span>
               </div>
               {entry.description && <p className="text-xs text-muted-foreground">{entry.description}</p>}
@@ -171,19 +172,21 @@ export default function ApiExplorerPage() {
                 <label className={label}>Query params</label>
                 <Input value={query} onChange={e => setQuery(e.target.value)} className="font-mono text-xs" />
               </div>
-              {entry.method === "POST" && (
-                <div className="space-y-1.5">
-                  <label className={label}>Body</label>
+              <div className="space-y-1.5">
+                <label className={label}>Body{entry.method === "POST" ? ` (${entry.contentType || "application/json"})` : ""}</label>
+                {entry.method === "POST" ? (
                   <textarea
                     value={body}
                     onChange={e => setBody(e.target.value)}
-                    rows={8}
+                    rows={14}
                     className="w-full rounded-md border bg-background p-3 font-mono text-xs"
                     data-testid="input-body"
                   />
-                </div>
-              )}
-            </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No body — GET requests don&apos;t send one.</p>
+                )}
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
