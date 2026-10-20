@@ -131,10 +131,11 @@ export default function BatchBuilderPage() {
     setLines(l => [...l, line])
     setDraft(d => Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith("Line."))))
   }
-  const addRecord = () => {
+  const [copies, setCopies] = useState(2)
+  const addRecord = (count = 1) => {
     const { header, line, hasLine } = split()
     const all = hasLine ? [...lines, line] : lines
-    setAdded(a => ({ ...a, [entity]: [...(a[entity] ?? []), { header, lines: all }] }))
+    setAdded(a => ({ ...a, [entity]: [...(a[entity] ?? []), ...Array.from({ length: count }, () => ({ header: { ...header }, lines: all.map(l => ({ ...l })) }))] }))
     setDraft({})
     setLines([])
   }
@@ -366,7 +367,17 @@ export default function BatchBuilderPage() {
                 </>
               )
             })()}
-            <Button onClick={addRecord} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add {entity} to batch</Button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={() => addRecord(1)} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add {entity} to batch</Button>
+              <div className="flex items-center gap-2 rounded-md bg-primary pl-3 pr-1 h-10 text-primary-foreground text-sm">
+                <Plus className="w-4 h-4" />Add
+                <input type="number" min={2} max={500} value={copies}
+                  onChange={e => setCopies(Math.max(2, Math.min(500, Number(e.target.value) || 2)))}
+                  className="w-16 h-8 rounded bg-background text-foreground px-2 text-center" data-testid="input-copies" />
+                {entity} to batch
+                <Button variant="secondary" size="sm" className="h-8" onClick={() => addRecord(copies)} data-testid="button-add-copies">Add</Button>
+              </div>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3">
