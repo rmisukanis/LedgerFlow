@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import * as XLSX from "xlsx"
-import { Download, Upload, Send, Loader2 } from "lucide-react"
+import { Download, Upload, Send, Loader2, Plus } from "lucide-react"
+import { Input } from "@/components/ui/input"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -12,6 +13,21 @@ const API = `${import.meta.env.BASE_URL}api/qb/explorer/run`
 const label = "text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 
 type Obj = Record<string, unknown>
+
+// Which QuickBooks list feeds each reference field: [entity to query, name column]
+const REF_SOURCES: Record<string, [string, string]> = {
+  VendorRef: ["Vendor", "DisplayName"],
+  CustomerRef: ["Customer", "DisplayName"],
+  ParentRef: ["Customer", "DisplayName"],
+  APAccountRef: ["Account", "Name"],
+  "Line.AccountRef": ["Account", "Name"],
+  "Line.ItemRef": ["Item", "Name"],
+  DepartmentRef: ["Department", "Name"],
+  SalesTermRef: ["Term", "Name"],
+  TermRef: ["Term", "Name"],
+  PaymentMethodRef: ["PaymentMethod", "Name"],
+}
+interface Opt { id: string; name: string }
 
 function convert(f: BatchField, raw: string): unknown {
   const v = raw.trim()
@@ -53,14 +69,46 @@ export default function BatchBuilderPage() {
   const [problems, setProblems] = useState<string[]>([])
   const [results, setResults] = useState<string[] | null>(null)
   const [sending, setSending] = useState(false)
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [added, setAdded] = useState<Record<string, Record<string, string>[]>>({})
+  const [options, setOptions] = useState<Record<string, Opt[] | "loading" | "error">>({})
+  const addedRows = added[entity] ?? []
 
   const selected = useMemo(
     () => all.filter(f => f.required || picked.has(f.name)),
     [all, picked],
   )
 
+  useEffect(() => {
+    for (const f of selected) {
+      const src = REF_SOURCES[f.name]
+      if (!src || options[f.name]) continue
+      setOptions(o => ({ ...o, [f.name]: "loading" }))
+      const q = `SELECT Id, ${src[1]} FROM ${src[0]} MAXRESULTS 1000`
+      fetch(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method: "GET", path: "/query", query: new URLSearchParams({ query: q }).toString() }),
+      })
+        .then(r => r.json())
+        .then(j => {
+          const rows = (j.data?.QueryResponse?.[src[0]] as Obj[] | undefined) ?? []
+          if (j.status >= 300) throw new Error("query failed")
+          setOptions(o => ({ ...o, [f.name]: rows.map(r => ({ id: String(r.Id), name: String(r[src[1]] ?? "") })) }))
+        })
+        .catch(() => setOptions(o => ({ ...o, [f.name]: "error" })))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected])
+
+  const addRecord = () => {
+    setAdded(a => ({ ...a, [entity]: [...(a[entity] ?? []), { ...draft }] }))
+    setDraft({})
+  }
+  const clearAdded = () => setAdded(a => ({ ...a, [entity]: [] }))
+
   const reset = () => { setRecords([]); setProblems([]); setResults(null) }
-  const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); reset() }
+  const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); setDraft({}); reset() }
   const toggle = (n: string) => {
     setPicked(p => { const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s })
     reset()
@@ -68,7 +116,7 @@ export default function BatchBuilderPage() {
 
   const download = () => {
     const cols = [...(schema.lineFields ? ["Group"] : []), ...selected.map(f => f.name)]
-    const ws = XLSX.utils.aoa_to_sheet([cols])
+    const ws = XLSX.utils.aoa_to_sheet([cols, ...addedRows.map(r => cols.map(c => r[c] ?? ""))])
     const help = XLSX.utils.aoa_to_sheet([
       ["Column", "Required", "Notes"],
       ...(schema.lineFields ? [["Group", "No", "Rows with the same Group value become ONE record with several lines. Leave blank for one record per row."]] : []),
@@ -161,6 +209,10 @@ export default function BatchBuilderPage() {
 
       <Card>
         <CardContent className="p-5 space-y-5">
+          <div className="flex items-center justify-between rounded-md bg-muted/40 px-4 py-2 text-sm" data-testid="added-counter">
+            <span><strong>{addedRows.length}</strong> {entity} record{addedRows.length === 1 ? "" : "s"} added to the batch</span>
+            {addedRows.length > 0 && <Button variant="ghost" size="sm" onClick={clearAdded}>Clear</Button>}
+          </div>
           <div className="space-y-1.5 w-[220px]">
             <label className={label}>1. Entity</label>
             <Select value={entity} onValueChange={changeEntity}>
@@ -188,12 +240,52 @@ export default function BatchBuilderPage() {
             </div>
           </div>
 
+          <div className="space-y-3 border-t pt-4">
+            <label className={label}>3. Fill in a record (leave anything blank to complete in Excel)</label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {schema.lineFields && (
+                <div className="space-y-1">
+                  <span className="text-sm">Group <span className="text-xs text-muted-foreground">(same value = one record with several lines)</span></span>
+                  <Input value={draft["Group"] ?? ""} onChange={e => setDraft(d => ({ ...d, Group: e.target.value }))} />
+                </div>
+              )}
+              {selected.map(f => {
+                const val = draft[f.name] ?? ""
+                const set = (v: string) => setDraft(d => ({ ...d, [f.name]: v }))
+                const opts = options[f.name]
+                return (
+                  <div key={f.name} className="space-y-1">
+                    <span className="text-sm">{f.name}{f.required && <span className="text-rose-600"> *</span>}
+                      {f.hint && <span className="text-xs text-muted-foreground"> — {f.hint}</span>}</span>
+                    {REF_SOURCES[f.name] ? (
+                      opts === "error" ? <p className="text-xs text-rose-600">Could not load list from QuickBooks</p> : (
+                        <select value={val} onChange={e => set(e.target.value)} disabled={opts === undefined || opts === "loading"}
+                          className="w-full h-10 rounded-md border bg-background px-3 text-sm" data-testid={`draft-${f.name}`}>
+                          <option value="">{opts === "loading" || opts === undefined ? "Loading…" : "— leave blank —"}</option>
+                          {Array.isArray(opts) && opts.map(o => <option key={o.id} value={o.id}>{o.name} ({o.id})</option>)}
+                        </select>
+                      )
+                    ) : f.kind === "bool" ? (
+                      <select value={val} onChange={e => set(e.target.value)} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+                        <option value="">— leave blank —</option><option value="TRUE">TRUE</option><option value="FALSE">FALSE</option>
+                      </select>
+                    ) : (
+                      <Input value={val} onChange={e => set(e.target.value)} type={f.hint?.startsWith("YYYY") ? "date" : f.kind === "number" ? "number" : "text"}
+                        placeholder={f.kind === "number" ? "Amount — or leave blank" : ""} data-testid={`draft-${f.name}`} />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <Button onClick={addRecord} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add to batch</Button>
+          </div>
+
           <div className="flex flex-wrap gap-3">
             <Button variant="outline" onClick={download} data-testid="button-download">
-              <Download className="w-4 h-4 mr-2" />3. Download Excel template
+              <Download className="w-4 h-4 mr-2" />4. Download Excel template
             </Button>
             <label className="inline-flex items-center gap-2 h-10 px-4 rounded-md border text-sm font-medium cursor-pointer hover:bg-muted">
-              <Upload className="w-4 h-4" />4. Upload filled file
+              <Upload className="w-4 h-4" />5. Upload filled file
               <input type="file" accept=".xlsx,.xls,.csv" className="hidden" data-testid="input-upload"
                 onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = "" }} />
             </label>
