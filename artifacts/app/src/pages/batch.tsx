@@ -148,7 +148,7 @@ export default function BatchBuilderPage() {
     addedRows.forEach((rec, i) => {
       const n = Math.max(1, rec.lines.length)
       for (let k = 0; k < n; k++) {
-        const vals: Record<string, string> = { ...(k === 0 ? rec.header : {}), ...(rec.lines[k] ?? {}) }
+        const vals: Record<string, string> = { ...rec.header, ...(rec.lines[k] ?? {}) }
         if (schema.lineFields) vals["Group"] = String(i + 1)
         out.push(vals)
       }
@@ -162,7 +162,7 @@ export default function BatchBuilderPage() {
     const ws = XLSX.utils.aoa_to_sheet([cols, ...rows])
     const help = XLSX.utils.aoa_to_sheet([
       ["Column", "Required", "Notes"],
-      ...(schema.lineFields ? [["Group", "No", "Rows with the same Group number are ONE record with several lines. Header fields only need to be on the first row of each group."]] : []),
+      ...(schema.lineFields ? [["Group", "No", "Rows with the same Group number are ONE record with several lines. Header fields (like the vendor) are repeated on every row."]] : []),
       ...selected.map(f => [f.name, f.required ? "Yes" : "No", f.hint ?? ""]),
     ])
     const wb = XLSX.utils.book_new()
