@@ -199,6 +199,9 @@ export default function BatchBuilderPage() {
       const n = i + 2
       const group = (row["Group"] ?? "").toString().trim()
       let rec = group ? groups.get(group) : undefined
+      // A row with no Group and no header values is another line of the previous record
+      const headerBlank = schema.fields.every(f => (row[f.name] ?? "").toString().trim() === "")
+      if (!rec && !group && headerBlank && schema.lineFields && recs.length > 0) rec = recs[recs.length - 1]
       if (!rec) {
         rec = {}
         for (const f of schema.fields) {
