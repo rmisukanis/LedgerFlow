@@ -26,6 +26,7 @@ interface RunResult {
   data: unknown
 }
 
+const storeKey = (e: Entry) => `qb-body:${e.method}:${e.folder}:${e.name}`
 const API = `${import.meta.env.BASE_URL}api/qb/explorer`
 
 export default function ApiExplorerPage() {
@@ -39,6 +40,7 @@ export default function ApiExplorerPage() {
   const [id, setId] = useState("")
   const [query, setQuery] = useState("")
   const [body, setBody] = useState("")
+  const [saveBody, setSaveBody] = useState(false)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +49,7 @@ export default function ApiExplorerPage() {
     fetch(`${API}/catalog`).then(r => r.json()).then((c: Entry[]) => {
       setCatalog(c)
       const e = c.find(x => x.method === "GET" && x.folder === "Invoice") ?? c[0]
-      if (e) { setMethod(e.method); setFolder(e.folder); setOpKey(e.name); setQuery(e.query); setBody(e.body) }
+      if (e) { setMethod(e.method); setFolder(e.folder); loadEntry(e) }
     }).catch(() => setError("Could not load the QuickBooks catalog."))
   }, [])
 
@@ -61,10 +63,15 @@ export default function ApiExplorerPage() {
   const needsId = entry?.path.includes("{id}") ?? false
   const resolvedPath = entry ? entry.path.replace("{id}", id || "{id}") : ""
 
-  const pick = (e: Entry | undefined) => {
+  const loadEntry = (e: Entry | undefined) => {
+    const saved = e ? localStorage.getItem(storeKey(e)) : null
     setOpKey(e?.name ?? "")
     setQuery(e?.query ?? "")
-    setBody(e?.body ?? "")
+    setBody(saved ?? e?.body ?? "")
+    setSaveBody(saved !== null)
+  }
+  const pick = (e: Entry | undefined) => {
+    loadEntry(e)
     setId("")
     setResult(null)
   }
@@ -173,11 +180,29 @@ export default function ApiExplorerPage() {
                 <Input value={query} onChange={e => setQuery(e.target.value)} className="font-mono text-xs" />
               </div>
               <div className="space-y-1.5">
+                {entry.method === "POST" && (
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={saveBody}
+                      onChange={e => {
+                        setSaveBody(e.target.checked)
+                        if (e.target.checked) localStorage.setItem(storeKey(entry), body)
+                        else { localStorage.removeItem(storeKey(entry)); setBody(entry.body) }
+                      }}
+                      data-testid="checkbox-save-body"
+                    />
+                    Save my edited body for next time (uncheck to restore the original)
+                  </label>
+                )}
                 <label className={label}>Body{entry.method === "POST" ? ` (${entry.contentType || "application/json"})` : ""}</label>
                 {entry.method === "POST" ? (
                   <textarea
                     value={body}
-                    onChange={e => setBody(e.target.value)}
+                    onChange={e => {
+                      setBody(e.target.value)
+                      if (saveBody) localStorage.setItem(storeKey(entry), e.target.value)
+                    }}
                     rows={14}
                     className="w-full rounded-md border bg-background p-3 font-mono text-xs"
                     data-testid="input-body"
