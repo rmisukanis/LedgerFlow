@@ -32,7 +32,11 @@ interface Opt { id: string; name: string }
 function convert(f: BatchField, raw: string): unknown {
   const v = raw.trim()
   switch (f.kind) {
-    case "number": return Number(v)
+    case "number": {
+      const n = Number(v.replace(/[$,\s]/g, ""))
+      if (Number.isNaN(n)) throw new Error("not a number")
+      return n
+    }
     case "bool": return /^(true|1|yes)$/i.test(v)
     case "ref": return { value: v }
     case "email": return { Address: v }
@@ -45,7 +49,12 @@ function convert(f: BatchField, raw: string): unknown {
 function buildLine(entity: string, row: Record<string, string>): Obj | null {
   const get = (k: string) => (row[k] ?? "").toString().trim()
   if (!get("Line.Amount")) return null
-  const line: Obj = { Amount: Number(get("Line.Amount")) }
+  const num = (k: string) => {
+    const n = Number(get(k).replace(/[$,\s]/g, ""))
+    if (Number.isNaN(n)) throw new Error(k + " is not a number")
+    return n
+  }
+  const line: Obj = { Amount: num("Line.Amount") }
   if (get("Line.Description")) line.Description = get("Line.Description")
   if (entity === "Bill") {
     line.DetailType = "AccountBasedExpenseLineDetail"
@@ -53,8 +62,8 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   } else {
     line.DetailType = "SalesItemLineDetail"
     const d: Obj = { ItemRef: { value: get("Line.ItemRef") } }
-    if (get("Line.Qty")) d.Qty = Number(get("Line.Qty"))
-    if (get("Line.UnitPrice")) d.UnitPrice = Number(get("Line.UnitPrice"))
+    if (get("Line.Qty")) d.Qty = num("Line.Qty")
+    if (get("Line.UnitPrice")) d.UnitPrice = num("Line.UnitPrice")
     line.SalesItemLineDetail = d
   }
   return line
@@ -164,8 +173,20 @@ export default function BatchBuilderPage() {
 
   const upload = async (file: File) => {
     reset()
-    const wb = XLSX.read(await file.arrayBuffer())
-    processRows(XLSX.utils.sheet_to_json<Record<string, string>>(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false }))
+    const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true })
+    const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: true })
+    const cell = (v: unknown): string => {
+      if (v instanceof Date) return new Date(v.getTime() + 12 * 3600 * 1000).toISOString().slice(0, 10)
+      const t = String(v ?? "").trim()
+      const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/)
+      if (m) return `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`
+      return t
+    }
+    processRows(
+      raw
+        .map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [k.trim(), cell(v)])))
+        .filter(r => Object.values(r).some(v => v !== "")),
+    )
   }
 
   const processRows = (rows: Record<string, string>[]) => {
@@ -195,8 +216,10 @@ export default function BatchBuilderPage() {
         for (const f of schema.lineFields) {
           if (f.required && !(row[f.name] ?? "").toString().trim()) errs.push(`Row ${n}: ${f.name} is required`)
         }
-        const line = buildLine(entity, row)
-        if (line) ((rec.Line as Obj[]) ??= []).push(line)
+        try {
+          const line = buildLine(entity, row)
+          if (line) ((rec.Line as Obj[]) ??= []).push(line)
+        } catch (e) { errs.push(`Row ${n}: ${e instanceof Error ? e.message : "invalid line"}`) }
       }
     })
     void lineNames
