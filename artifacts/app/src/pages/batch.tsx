@@ -134,17 +134,22 @@ export default function BatchBuilderPage() {
     reset()
   }
 
-  const download = () => {
-    const cols = [...(schema.lineFields ? ["Group"] : []), ...selected.map(f => f.name)]
-    const rows: string[][] = []
+  const addedRowObjects = () => {
+    const out: Record<string, string>[] = []
     addedRows.forEach((rec, i) => {
       const n = Math.max(1, rec.lines.length)
       for (let k = 0; k < n; k++) {
         const vals: Record<string, string> = { ...(k === 0 ? rec.header : {}), ...(rec.lines[k] ?? {}) }
         if (schema.lineFields) vals["Group"] = String(i + 1)
-        rows.push(cols.map(c => vals[c] ?? ""))
+        out.push(vals)
       }
     })
+    return out
+  }
+
+  const download = () => {
+    const cols = [...(schema.lineFields ? ["Group"] : []), ...selected.map(f => f.name)]
+    const rows = addedRowObjects().map(v => cols.map(c => v[c] ?? ""))
     const ws = XLSX.utils.aoa_to_sheet([cols, ...rows])
     const help = XLSX.utils.aoa_to_sheet([
       ["Column", "Required", "Notes"],
@@ -160,7 +165,11 @@ export default function BatchBuilderPage() {
   const upload = async (file: File) => {
     reset()
     const wb = XLSX.read(await file.arrayBuffer())
-    const rows = XLSX.utils.sheet_to_json<Record<string, string>>(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false })
+    processRows(XLSX.utils.sheet_to_json<Record<string, string>>(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: false }))
+  }
+
+  const processRows = (rows: Record<string, string>[]) => {
+    reset()
     const errs: string[] = []
     const recs: Obj[] = []
     const groups = new Map<string, Obj>()
@@ -329,6 +338,9 @@ export default function BatchBuilderPage() {
           <div className="flex flex-wrap gap-3">
             <Button variant="outline" onClick={download} data-testid="button-download">
               <Download className="w-4 h-4 mr-2" />4. Download Excel template
+            </Button>
+            <Button variant="outline" disabled={addedRows.length === 0} onClick={() => processRows(addedRowObjects())} data-testid="button-submit-added">
+              <Send className="w-4 h-4 mr-2" />Submit added records ({addedRows.length})
             </Button>
             <label className="inline-flex items-center gap-2 h-10 px-4 rounded-md border text-sm font-medium cursor-pointer hover:bg-muted">
               <Upload className="w-4 h-4" />5. Upload filled file
