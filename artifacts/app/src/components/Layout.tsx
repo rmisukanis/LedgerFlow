@@ -2,6 +2,7 @@ import React from "react"
 import { Link, useLocation } from "wouter"
 import { 
   Network, 
+  Layers,
   LogOut,
   Hexagon
 } from "lucide-react"
@@ -16,6 +17,7 @@ export function Layout({ children }: LayoutProps) {
 
   const navItems = [
     { name: "API Explorer", href: "/api-explorer", icon: Network },
+    { name: "Batch Builder", href: "/batch", icon: Layers },
   ]
 
   return (
