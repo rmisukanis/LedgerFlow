@@ -70,7 +70,8 @@ export default function BatchBuilderPage() {
   const [results, setResults] = useState<string[] | null>(null)
   const [sending, setSending] = useState(false)
   const [draft, setDraft] = useState<Record<string, string>>({})
-  const [added, setAdded] = useState<Record<string, Record<string, string>[]>>({})
+  const [lines, setLines] = useState<Record<string, string>[]>([])
+  const [added, setAdded] = useState<Record<string, { header: Record<string, string>; lines: Record<string, string>[] }[]>>({})
   const [options, setOptions] = useState<Record<string, Opt[] | "loading" | "error">>({})
   const addedRows = added[entity] ?? []
 
@@ -101,14 +102,33 @@ export default function BatchBuilderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected])
 
+  const split = () => {
+    const header: Record<string, string> = {}
+    const line: Record<string, string> = {}
+    for (const [k, v] of Object.entries(draft)) (k.startsWith("Line.") ? line : header)[k] = v
+    return { header, line, hasLine: Object.values(line).some(v => v !== "") }
+  }
+  const addLine = () => {
+    const { line, hasLine } = split()
+    if (!hasLine) return
+    setLines(l => [...l, line])
+    setDraft(d => Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith("Line."))))
+  }
   const addRecord = () => {
-    setAdded(a => ({ ...a, [entity]: [...(a[entity] ?? []), { ...draft }] }))
+    const { header, line, hasLine } = split()
+    const all = hasLine ? [...lines, line] : lines
+    setAdded(a => ({ ...a, [entity]: [...(a[entity] ?? []), { header, lines: all }] }))
     setDraft({})
+    setLines([])
+  }
+  const optName = (field: string, id: string) => {
+    const o = options[field]
+    return (Array.isArray(o) && o.find(x => x.id === id)?.name) || id
   }
   const clearAdded = () => setAdded(a => ({ ...a, [entity]: [] }))
 
   const reset = () => { setRecords([]); setProblems([]); setResults(null) }
-  const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); setDraft({}); reset() }
+  const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); setDraft({}); setLines([]); reset() }
   const toggle = (n: string) => {
     setPicked(p => { const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s })
     reset()
@@ -116,10 +136,19 @@ export default function BatchBuilderPage() {
 
   const download = () => {
     const cols = [...(schema.lineFields ? ["Group"] : []), ...selected.map(f => f.name)]
-    const ws = XLSX.utils.aoa_to_sheet([cols, ...addedRows.map(r => cols.map(c => r[c] ?? ""))])
+    const rows: string[][] = []
+    addedRows.forEach((rec, i) => {
+      const n = Math.max(1, rec.lines.length)
+      for (let k = 0; k < n; k++) {
+        const vals: Record<string, string> = { ...(k === 0 ? rec.header : {}), ...(rec.lines[k] ?? {}) }
+        if (schema.lineFields) vals["Group"] = String(i + 1)
+        rows.push(cols.map(c => vals[c] ?? ""))
+      }
+    })
+    const ws = XLSX.utils.aoa_to_sheet([cols, ...rows])
     const help = XLSX.utils.aoa_to_sheet([
       ["Column", "Required", "Notes"],
-      ...(schema.lineFields ? [["Group", "No", "Rows with the same Group value become ONE record with several lines. Leave blank for one record per row."]] : []),
+      ...(schema.lineFields ? [["Group", "No", "Rows with the same Group number are ONE record with several lines. Header fields only need to be on the first row of each group."]] : []),
       ...selected.map(f => [f.name, f.required ? "Yes" : "No", f.hint ?? ""]),
     ])
     const wb = XLSX.utils.book_new()
@@ -242,20 +271,14 @@ export default function BatchBuilderPage() {
 
           <div className="space-y-3 border-t pt-4">
             <label className={label}>3. Fill in a record (leave anything blank to complete in Excel)</label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {schema.lineFields && (
-                <div className="space-y-1">
-                  <span className="text-sm">Group <span className="text-xs text-muted-foreground">(same value = one record with several lines)</span></span>
-                  <Input value={draft["Group"] ?? ""} onChange={e => setDraft(d => ({ ...d, Group: e.target.value }))} />
-                </div>
-              )}
-              {selected.map(f => {
+            {(() => {
+              const renderField = (f: BatchField) => {
                 const val = draft[f.name] ?? ""
                 const set = (v: string) => setDraft(d => ({ ...d, [f.name]: v }))
                 const opts = options[f.name]
                 return (
                   <div key={f.name} className="space-y-1">
-                    <span className="text-sm">{f.name}{f.required && <span className="text-rose-600"> *</span>}
+                    <span className="text-sm">{f.name.replace("Line.", "")}{f.required && <span className="text-rose-600"> *</span>}
                       {f.hint && <span className="text-xs text-muted-foreground"> — {f.hint}</span>}</span>
                     {REF_SOURCES[f.name] ? (
                       opts === "error" ? <p className="text-xs text-rose-600">Could not load list from QuickBooks</p> : (
@@ -275,9 +298,32 @@ export default function BatchBuilderPage() {
                     )}
                   </div>
                 )
-              })}
-            </div>
-            <Button onClick={addRecord} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add to batch</Button>
+              }
+              const headerFs = selected.filter(f => !f.name.startsWith("Line."))
+              const lineFs = selected.filter(f => f.name.startsWith("Line."))
+              return (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{headerFs.map(renderField)}</div>
+                  {lineFs.length > 0 && (
+                    <div className="rounded-md border p-4 space-y-3 bg-muted/10">
+                      <div className="text-sm font-semibold">Lines on this {entity.toLowerCase()} ({lines.length} added)</div>
+                      {lines.map((l, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs rounded bg-muted/40 px-3 py-1.5">
+                          <span>Line {i + 1}: {lineFs.map(f => {
+                            const v = l[f.name]
+                            return v ? `${f.name.replace("Line.", "")} ${REF_SOURCES[f.name] ? optName(f.name, v) : v}` : null
+                          }).filter(Boolean).join(" · ")}</span>
+                          <button className="text-rose-600" onClick={() => setLines(x => x.filter((_, j) => j !== i))}>Remove</button>
+                        </div>
+                      ))}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{lineFs.map(renderField)}</div>
+                      <Button variant="outline" size="sm" onClick={addLine} data-testid="button-add-line"><Plus className="w-4 h-4 mr-1" />Add another line</Button>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+            <Button onClick={addRecord} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add {entity} to batch</Button>
           </div>
 
           <div className="flex flex-wrap gap-3">
