@@ -69,6 +69,14 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   return line
 }
 
+function describe(entity: string, o: Obj | undefined, bId: unknown): string {
+  if (!o) return `Record ${bId}: created`
+  const ref = (o.VendorRef ?? o.CustomerRef) as { name?: string } | undefined
+  const name = ref?.name ?? (o.DisplayName as string | undefined)
+  const amt = o.TotalAmt !== undefined ? ` = ${Number(o.TotalAmt).toLocaleString("en-US", { style: "currency", currency: "USD" })}` : ""
+  return `${entity} ${o.Id}${amt}${name ? ` — ${name}` : ""}`
+}
+
 export default function BatchBuilderPage() {
   const [entity, setEntity] = useState("Bill")
   const schema = BATCH_SCHEMAS[entity]
@@ -252,7 +260,7 @@ export default function BatchBuilderPage() {
           out.push(
             fault
               ? `Record ${it.bId}: FAILED — ${fault.Error?.[0]?.Message ?? ""} ${fault.Error?.[0]?.Detail ?? ""}`
-              : `Record ${it.bId}: created (Id ${(it[entity] as Obj | undefined)?.Id})`,
+              : describe(entity, it[entity] as Obj | undefined, it.bId),
           )
         }
       }
