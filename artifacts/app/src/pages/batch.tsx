@@ -15,12 +15,12 @@ const label = "text-xs font-semibold text-muted-foreground uppercase tracking-wi
 type Obj = Record<string, unknown>
 
 // Which QuickBooks list feeds each reference field: [entity to query, name column]
-const REF_SOURCES: Record<string, [string, string]> = {
+const REF_SOURCES: Record<string, [string, string, string?]> = {
   VendorRef: ["Vendor", "DisplayName"],
   CustomerRef: ["Customer", "DisplayName"],
   ParentRef: ["Customer", "DisplayName"],
   APAccountRef: ["Account", "Name"],
-  AccountRef: ["Account", "Name"],
+  AccountRef: ["Account", "Name", "WHERE AccountType IN ('Bank', 'Credit Card')"],
   EntityRef: ["Vendor", "DisplayName"],
   "Line.AccountRef": ["Account", "Name"],
   "Line.ItemRef": ["Item", "Name"],
@@ -30,10 +30,15 @@ const REF_SOURCES: Record<string, [string, string]> = {
   PaymentMethodRef: ["PaymentMethod", "Name"],
 }
 const STATIC_OPTIONS: Record<string, string[]> = { PaymentType: ["Cash", "Check", "CreditCard"] }
-interface Opt { id: string; name: string }
+interface Opt { id: string; name: string; type?: string }
 
 function convert(f: BatchField, raw: string): unknown {
   const v = raw.trim()
+  if (f.name === "PaymentType") {
+    const m = { cash: "Cash", check: "Check", cheque: "Check", creditcard: "CreditCard" }[v.toLowerCase().replace(/[\s_-]/g, "")]
+    if (!m) throw new Error("must be Cash, Check or CreditCard")
+    return m
+  }
   switch (f.kind) {
     case "number": {
       const n = Number(v.replace(/[$,\s]/g, ""))
@@ -105,7 +110,7 @@ export default function BatchBuilderPage() {
       const src = REF_SOURCES[f.name]
       if (!src || options[f.name]) continue
       setOptions(o => ({ ...o, [f.name]: "loading" }))
-      const q = `SELECT Id, ${src[1]} FROM ${src[0]} MAXRESULTS 1000`
+      const q = `SELECT Id, ${src[1]}${src[0] === "Account" ? ", AccountType" : ""} FROM ${src[0]}${src[2] ? " " + src[2] : ""} MAXRESULTS 1000`
       fetch(API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +120,7 @@ export default function BatchBuilderPage() {
         .then(j => {
           const rows = (j.data?.QueryResponse?.[src[0]] as Obj[] | undefined) ?? []
           if (j.status >= 300) throw new Error("query failed")
-          setOptions(o => ({ ...o, [f.name]: rows.map(r => ({ id: String(r.Id), name: String(r[src[1]] ?? "") })) }))
+          setOptions(o => ({ ...o, [f.name]: rows.map(r => ({ id: String(r.Id), name: String(r[src[1]] ?? ""), type: r.AccountType ? String(r.AccountType) : undefined })) }))
         })
         .catch(() => setOptions(o => ({ ...o, [f.name]: "error" })))
     }
@@ -337,7 +342,7 @@ export default function BatchBuilderPage() {
                         <select value={val} onChange={e => set(e.target.value)} disabled={opts === undefined || opts === "loading"}
                           className="w-full h-10 rounded-md border bg-background px-3 text-sm" data-testid={`draft-${f.name}`}>
                           <option value="">{opts === "loading" || opts === undefined ? "Loading…" : "— leave blank —"}</option>
-                          {Array.isArray(opts) && opts.map(o => <option key={o.id} value={o.id}>{o.name} ({o.id})</option>)}
+                          {Array.isArray(opts) && opts.map(o => <option key={o.id} value={o.id}>{o.name} ({o.id}){o.type ? ` · ${o.type}` : ""}</option>)}
                         </select>
                       )
                     ) : f.kind === "bool" ? (
