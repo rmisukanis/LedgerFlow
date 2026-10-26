@@ -20,6 +20,8 @@ const REF_SOURCES: Record<string, [string, string]> = {
   CustomerRef: ["Customer", "DisplayName"],
   ParentRef: ["Customer", "DisplayName"],
   APAccountRef: ["Account", "Name"],
+  AccountRef: ["Account", "Name"],
+  EntityRef: ["Vendor", "DisplayName"],
   "Line.AccountRef": ["Account", "Name"],
   "Line.ItemRef": ["Item", "Name"],
   DepartmentRef: ["Department", "Name"],
@@ -27,6 +29,7 @@ const REF_SOURCES: Record<string, [string, string]> = {
   TermRef: ["Term", "Name"],
   PaymentMethodRef: ["PaymentMethod", "Name"],
 }
+const STATIC_OPTIONS: Record<string, string[]> = { PaymentType: ["Cash", "Check", "CreditCard"] }
 interface Opt { id: string; name: string }
 
 function convert(f: BatchField, raw: string): unknown {
@@ -38,7 +41,7 @@ function convert(f: BatchField, raw: string): unknown {
       return n
     }
     case "bool": return /^(true|1|yes)$/i.test(v)
-    case "ref": return { value: v }
+    case "ref": return f.name === "EntityRef" ? { value: v, type: "Vendor" } : { value: v }
     case "email": return { Address: v }
     case "phone": return { FreeFormNumber: v }
     case "json": return JSON.parse(v)
@@ -56,7 +59,7 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   }
   const line: Obj = { Amount: num("Line.Amount") }
   if (get("Line.Description")) line.Description = get("Line.Description")
-  if (entity === "Bill") {
+  if (entity === "Bill" || entity === "Purchase") {
     line.DetailType = "AccountBasedExpenseLineDetail"
     line.AccountBasedExpenseLineDetail = { AccountRef: { value: get("Line.AccountRef") } }
   } else {
@@ -71,7 +74,7 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
 
 function describe(entity: string, o: Obj | undefined, bId: unknown): string {
   if (!o) return `Record ${bId}: created`
-  const ref = (o.VendorRef ?? o.CustomerRef) as { name?: string } | undefined
+  const ref = (o.VendorRef ?? o.CustomerRef ?? o.EntityRef) as { name?: string } | undefined
   const name = ref?.name ?? (o.DisplayName as string | undefined)
   const amt = o.TotalAmt !== undefined ? ` = ${Number(o.TotalAmt).toLocaleString("en-US", { style: "currency", currency: "USD" })}` : ""
   return `${entity} ${o.Id}${amt}${name ? ` — ${name}` : ""}`
@@ -324,7 +327,12 @@ export default function BatchBuilderPage() {
                   <div key={f.name} className="space-y-1">
                     <span className="text-sm">{f.name.replace("Line.", "")}{f.required && <span className="text-rose-600"> *</span>}
                       {f.hint && <span className="text-xs text-muted-foreground"> — {f.hint}</span>}</span>
-                    {REF_SOURCES[f.name] ? (
+                    {STATIC_OPTIONS[f.name] ? (
+                      <select value={val} onChange={e => set(e.target.value)} className="w-full h-10 rounded-md border bg-background px-3 text-sm" data-testid={`draft-${f.name}`}>
+                        <option value="">— leave blank —</option>
+                        {STATIC_OPTIONS[f.name].map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    ) : REF_SOURCES[f.name] ? (
                       opts === "error" ? <p className="text-xs text-rose-600">Could not load list from QuickBooks</p> : (
                         <select value={val} onChange={e => set(e.target.value)} disabled={opts === undefined || opts === "loading"}
                           className="w-full h-10 rounded-md border bg-background px-3 text-sm" data-testid={`draft-${f.name}`}>
