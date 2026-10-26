@@ -51,6 +51,7 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
     lineFields: [
       { name: "Line.Amount", kind: "number", required: true },
       { name: "Line.AccountRef", kind: "ref", required: true, hint: "Expense account Id" },
+      { name: "Line.CustomerRef", kind: "ref", hint: "Customer Id — required when the account is Accounts Receivable" },
       { name: "Line.Description", kind: "text" },
     ],
   },
@@ -70,6 +71,7 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
     lineFields: [
       { name: "Line.Amount", kind: "number", required: true },
       { name: "Line.AccountRef", kind: "ref", required: true, hint: "Expense account Id" },
+      { name: "Line.CustomerRef", kind: "ref", hint: "Customer Id — required when the account is Accounts Receivable" },
       { name: "Line.Description", kind: "text" },
     ],
   },

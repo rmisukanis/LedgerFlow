@@ -23,6 +23,7 @@ const REF_SOURCES: Record<string, [string, string, string?]> = {
   AccountRef: ["Account", "Name", "WHERE AccountType IN ('Bank', 'Credit Card')"],
   EntityRef: ["Vendor", "DisplayName"],
   "Line.AccountRef": ["Account", "Name"],
+  "Line.CustomerRef": ["Customer", "DisplayName"],
   "Line.ItemRef": ["Item", "Name"],
   DepartmentRef: ["Department", "Name"],
   SalesTermRef: ["Term", "Name"],
@@ -66,7 +67,9 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   if (get("Line.Description")) line.Description = get("Line.Description")
   if (entity === "Bill" || entity === "Purchase") {
     line.DetailType = "AccountBasedExpenseLineDetail"
-    line.AccountBasedExpenseLineDetail = { AccountRef: { value: get("Line.AccountRef") } }
+    const d: Obj = { AccountRef: { value: get("Line.AccountRef") } }
+    if (get("Line.CustomerRef")) d.CustomerRef = { value: get("Line.CustomerRef") }
+    line.AccountBasedExpenseLineDetail = d
   } else {
     line.DetailType = "SalesItemLineDetail"
     const d: Obj = { ItemRef: { value: get("Line.ItemRef") } }
