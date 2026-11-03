@@ -9,7 +9,7 @@ const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
 const DATE_MACROS = ["Today", "Yesterday", "This Week", "Last Week", "This Week-to-date", "Last Week-to-date", "Next Week", "Next 4 Weeks", "This Month", "Last Month", "This Month-to-date", "Last Month-to-date", "Next Month", "This Fiscal Quarter", "Last Fiscal Quarter", "This Fiscal Quarter-to-date", "Last Fiscal Quarter-to-date", "Next Fiscal Quarter", "This Fiscal Year", "Last Fiscal Year", "This Fiscal Year-to-date", "Last Fiscal Year-to-date", "Next Fiscal Year"]
 const ACCOUNT_TYPES = ["AccountsPayable", "AccountsReceivable", "Bank", "CostOfGoodsSold", "CreditCard", "Equity", "Expense", "FixedAsset", "Income", "LongTermLiability", "NonPosting", "OtherAsset", "OtherCurrentAsset", "OtherCurrentLiability", "OtherExpense", "OtherIncome"]
 const SUMMARIZE = ["Total", "Month", "Week", "Days", "Quarter", "Year", "Customers", "Vendors", "Classes", "Departments", "Employees", "ProductsAndServices"]
-const COLUMNS = ["account_name", "chk_print_state", "create_by", "create_date", "cust_name", "doc_num", "emp_name", "inv_date", "is_adj", "is_ap_paid", "is_ar_paid", "is_cleared", "item_name", "last_mod_by", "last_mod_date", "memo", "name", "quantity", "rate", "split_acc", "tx_date", "txn_type", "vend_name", "net_amount", "tax_amount", "tax_code", "account_num", "klass_name", "dept_name"]
+const COLUMNS = ["account_name", "chk_print_state", "create_by", "create_date", "cust_name", "doc_num", "emp_name", "inv_date", "is_adj", "is_ap_paid", "is_ar_paid", "is_cleared", "item_name", "last_mod_by", "last_mod_date", "memo", "name", "quantity", "rate", "split_acc", "tx_date", "txn_type", "vend_name", "subt_nat_amount", "rbal_nat_amount", "net_amount", "tax_amount", "tax_code", "account_num", "klass_name", "dept_name"]
 
 interface Opt { id: string; name: string }
 type Values = Record<string, string | string[]>
@@ -122,6 +122,7 @@ export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) =
         <Lookup title="department" entity="Department" nameCol="Name" value={arr("department")} onChange={x => set("department", x)} />
       </div>
       <Check title="columns" options={COLUMNS} value={arr("columns")} onChange={x => set("columns", x)} />
+      <p className="text-xs text-muted-foreground">For the transaction amount and running balance, tick <b>subt_nat_amount</b> (Amount) and <b>rbal_nat_amount</b> (Balance). <b>net_amount</b> is only the taxable amount, which is usually blank or zero.</p>
       <p className="text-xs text-muted-foreground">Some columns (tax, account number, class, location) only work if that feature is turned on in the company.</p>
     </div>
   )
