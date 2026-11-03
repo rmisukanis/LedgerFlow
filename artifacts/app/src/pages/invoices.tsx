@@ -31,7 +31,7 @@ interface RepRow { type?: string; Header?: { ColData?: { value?: string }[] }; C
 
 // Flattens a QuickBooks report into a plain table (null if the response isn't a report).
 function reportToTable(data: unknown): { head: string[]; rows: string[][] } | null {
-  const d = data as { Columns?: { Column?: { ColTitle?: string }[] }; Rows?: { Row?: RepRow[] } } | undefined
+  const d = data as { Columns?: { Column?: { ColTitle?: string; MetaData?: { Name: string; Value: string }[] }[] }; Rows?: { Row?: RepRow[] } } | undefined
   const cols = d?.Columns?.Column
   if (!cols || !d?.Rows) return null
   const rows: string[][] = []
@@ -43,7 +43,11 @@ function reportToTable(data: unknown): { head: string[]; rows: string[][] } | nu
     }
   }
   walk(d.Rows.Row ?? [], "")
-  return { head: ["Section", ...cols.map((c, i) => c.ColTitle || `Column ${i + 1}`)], rows }
+  return { head: ["Section", ...cols.map((c, i) => {
+    const key = c.MetaData?.find(m => m.Name === "ColKey")?.Value
+    const title = c.ColTitle || `Column ${i + 1}`
+    return key && key !== title ? `${title} = ${key}` : title
+  })], rows }
 }
 
 function downloadCsv(t: { head: string[]; rows: string[][] }) {

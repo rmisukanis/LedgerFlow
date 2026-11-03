@@ -11,6 +11,16 @@ const ACCOUNT_TYPES = ["AccountsPayable", "AccountsReceivable", "Bank", "CostOfG
 const SUMMARIZE = ["Total", "Month", "Week", "Days", "Quarter", "Year", "Customers", "Vendors", "Classes", "Departments", "Employees", "ProductsAndServices"]
 const COLUMNS = ["account_name", "chk_print_state", "create_by", "create_date", "cust_name", "doc_num", "emp_name", "inv_date", "is_adj", "is_ap_paid", "is_ar_paid", "is_cleared", "item_name", "last_mod_by", "last_mod_date", "memo", "name", "quantity", "rate", "split_acc", "tx_date", "txn_type", "vend_name", "subt_nat_amount", "rbal_nat_amount", "net_amount", "tax_amount", "tax_code", "account_num", "klass_name", "dept_name"]
 
+// Title QuickBooks shows for each column key (checked against the API response)
+const COL_TITLES: Record<string, string> = {
+  tx_date: "Date", txn_type: "Transaction Type", doc_num: "Num", is_adj: "Adj", create_date: "Create Date", create_by: "Created By",
+  last_mod_date: "Last Modified", last_mod_by: "Last Modified By", name: "Name", cust_name: "Customer", vend_name: "Vendor",
+  emp_name: "Employee", item_name: "Product/Service", memo: "Memo/Description", quantity: "Qty", rate: "Rate", account_name: "Account",
+  split_acc: "Split", inv_date: "Invoice Date", is_ar_paid: "A/R Paid", is_ap_paid: "A/P Paid", is_cleared: "Clr",
+  chk_print_state: "Check Printed", subt_nat_amount: "Amount", rbal_nat_amount: "Balance", tax_code: "Tax Name",
+  tax_amount: "Tax Amount", net_amount: "Taxable Amount", account_num: "Account #", klass_name: "Class", dept_name: "Location",
+}
+
 interface Opt { id: string; name: string }
 type Values = Record<string, string | string[]>
 
@@ -50,7 +60,7 @@ function Check({ title, options, value, onChange, search }: { title: string; opt
         {shown.map(o => (
           <label key={o.id} className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={value.includes(o.id)} onChange={() => toggle(o.id)} />
-            {o.name}{o.name !== o.id && <span className="text-xs text-muted-foreground">({o.id})</span>}
+            {o.name}{o.name !== o.id && !o.name.endsWith(` = ${o.id}`) && <span className="text-xs text-muted-foreground">({o.id})</span>}
           </label>
         ))}
       </div>
@@ -121,7 +131,7 @@ export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) =
         <Lookup title="class" entity="Class" nameCol="Name" value={arr("class")} onChange={x => set("class", x)} />
         <Lookup title="department" entity="Department" nameCol="Name" value={arr("department")} onChange={x => set("department", x)} />
       </div>
-      <Check title="columns" options={COLUMNS} value={arr("columns")} onChange={x => set("columns", x)} />
+      <Check title="columns" options={COLUMNS.map(c => ({ id: c, name: COL_TITLES[c] ? `${COL_TITLES[c]} = ${c}` : c }))} value={arr("columns")} onChange={x => set("columns", x)} />
       <p className="text-xs text-muted-foreground">For the transaction amount and running balance, tick <b>subt_nat_amount</b> (Amount) and <b>rbal_nat_amount</b> (Balance). <b>net_amount</b> is only the taxable amount, which is usually blank or zero.</p>
       <p className="text-xs text-muted-foreground">Some columns (tax, account number, class, location) only work if that feature is turned on in the company.</p>
     </div>
