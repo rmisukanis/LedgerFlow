@@ -315,7 +315,7 @@ export default function ReconcilePage() {
               <div className="space-y-1.5">
                 <label className={label}>&nbsp;</label>
                 <Button variant="outline" onClick={pull} disabled={!accountId || busy} data-testid="button-pull">
-                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks register
+                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks Register
                 </Button>
               </div>
             </div>
