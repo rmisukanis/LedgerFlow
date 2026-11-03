@@ -33,8 +33,10 @@ function useLookup(entity: string, nameCol: string) {
   return state
 }
 
-function Check({ title, options, value, onChange }: { title: string; options: string[] | Opt[]; value: string[]; onChange: (v: string[]) => void }) {
+function Check({ title, options, value, onChange, search }: { title: string; options: string[] | Opt[]; value: string[]; onChange: (v: string[]) => void; search?: boolean }) {
+  const [q, setQ] = useState("")
   const items = (options as (string | Opt)[]).map(o => (typeof o === "string" ? { id: o, name: o } : o))
+  const shown = q ? items.filter(o => o.name.toLowerCase().includes(q.toLowerCase())) : items
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id])
   return (
     <div className="space-y-1.5">
@@ -43,8 +45,9 @@ function Check({ title, options, value, onChange }: { title: string; options: st
         <button type="button" className="text-xs text-primary underline" onClick={() => onChange(items.map(i => i.id))} data-testid={`select-all-${title}`}>Select all</button>
         <button type="button" className="text-xs text-primary underline" onClick={() => onChange([])} data-testid={`clear-${title}`}>Clear</button>
       </div>
-      <div className="max-h-40 overflow-auto rounded-md border bg-background p-2 space-y-1">
-        {items.map(o => (
+      {search && <Input placeholder="Search…" value={q} onChange={e => setQ(e.target.value)} className="h-8 text-sm" />}
+      <div className={`${search ? "max-h-28" : "max-h-40"} overflow-auto rounded-md border bg-background p-2 space-y-1`}>
+        {shown.map(o => (
           <label key={o.id} className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={value.includes(o.id)} onChange={() => toggle(o.id)} />
             {o.name}{o.name !== o.id && <span className="text-xs text-muted-foreground">({o.id})</span>}
@@ -67,7 +70,7 @@ function Lookup({ title, entity, nameCol, value, onChange }: { title: string; en
     )
   }
   if (opts.length === 0) return <div className="space-y-1.5"><label className={label}>{title}</label><p className="text-xs text-muted-foreground">None found in QuickBooks.</p></div>
-  return <Check title={title} options={opts} value={value} onChange={onChange} />
+  return <Check title={title} options={opts} value={value} onChange={onChange} search />
 }
 
 export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) => void }) {
