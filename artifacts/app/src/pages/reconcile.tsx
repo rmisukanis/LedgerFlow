@@ -90,7 +90,8 @@ function reconcile(stmt: Line[], books: Line[], tol: number, from: string, to: s
   return {
     matched, stmtOnly, booksOnly,
     stmtTotal: stmt.reduce((a, l) => a + l.cents, 0),
-    booksTotal: books.filter(b => b.date >= from && b.date <= to).reduce((a, l) => a + l.cents, 0),
+    // QuickBooks side = every line matched to the statement (even if dated slightly outside the statement's range) + unmatched lines inside the range
+    booksTotal: matched.reduce((a, m) => a + m.r.cents, 0) + booksOnly.reduce((a, l) => a + l.cents, 0),
   }
 }
 
@@ -133,7 +134,7 @@ export default function ReconcilePage() {
   const [fileName, setFileName] = useState("")
   const [cols, setCols] = useState({ date: -1, desc: -1, amount: -1, debit: -1, credit: -1 })
   const [flip, setFlip] = useState(false)
-  const [tol, setTol] = useState(3)
+  const [tol, setTol] = useState(5)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<Result | null>(null)
