@@ -102,7 +102,39 @@ function DateField({ onIso, testId }: { onIso: (iso: string) => void; testId: st
   )
 }
 
-export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) => void }) {
+// Selected columns, shown as a list you can drag to set the left-to-right order of the results table.
+function ColumnOrder({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [from, setFrom] = useState<number | null>(null)
+  if (value.length < 2) return null
+  const drop = (to: number) => {
+    if (from === null || from === to) return
+    const next = [...value]
+    next.splice(to, 0, next.splice(from, 1)[0])
+    onChange(next)
+  }
+  return (
+    <div className="space-y-1.5" data-testid="gl-column-order">
+      <label className={label}>Column order (drag to rearrange, first = leftmost)</label>
+      <div className="flex flex-wrap gap-2">
+        {value.map((k, i) => (
+          <div
+            key={k}
+            draggable
+            onDragStart={() => setFrom(i)}
+            onDragOver={e => e.preventDefault()}
+            onDrop={() => { drop(i); setFrom(null) }}
+            onDragEnd={() => setFrom(null)}
+            className={`cursor-grab select-none rounded-md border bg-background px-2.5 py-1 text-sm ${from === i ? "opacity-40" : ""}`}
+          >
+            <span className="text-muted-foreground mr-1">⋮⋮</span>{COL_TITLES[k] ?? k}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function GeneralLedgerBuilder({ onChange, onColumnOrder }: { onChange: (query: string) => void; onColumnOrder: (keys: string[]) => void }) {
   const [v, setV] = useState<Values>({})
   const get = (k: string) => (v[k] as string) ?? ""
   const arr = (k: string) => (v[k] as string[]) ?? []
@@ -118,6 +150,9 @@ export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) =
     onChange(qs.toString())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v])
+
+  useEffect(() => { onColumnOrder(arr("columns")) }, [v.columns])
+  useEffect(() => () => onColumnOrder([]), [])
 
   const simpleSelect = (k: string, title: string, opts: string[]) => (
     <div className="space-y-1.5">
@@ -151,6 +186,7 @@ export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) =
         <Lookup title="department" entity="Department" nameCol="Name" value={arr("department")} onChange={x => set("department", x)} />
       </div>
       <Check title="columns" options={COLUMNS.map(c => ({ id: c, name: COL_TITLES[c] ? `${COL_TITLES[c]} = ${c}` : c }))} value={arr("columns")} onChange={x => set("columns", x)} />
+      <ColumnOrder value={arr("columns")} onChange={x => set("columns", x)} />
       <p className="text-xs text-muted-foreground">For the transaction amount and running balance, tick <b>subt_nat_amount</b> (Amount) and <b>rbal_nat_amount</b> (Balance). <b>net_amount</b> is only the taxable amount, which is usually blank or zero.</p>
       <p className="text-xs text-muted-foreground">Some columns (tax, account number, class, location) only work if that feature is turned on in the company.</p>
     </div>
