@@ -38,7 +38,11 @@ function Check({ title, options, value, onChange }: { title: string; options: st
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id])
   return (
     <div className="space-y-1.5">
-      <label className={label}>{title}{value.length > 0 && ` (${value.length} selected)`}</label>
+      <div className="flex items-center gap-3">
+        <label className={label}>{title}{value.length > 0 && ` (${value.length} selected)`}</label>
+        <button type="button" className="text-xs text-primary underline" onClick={() => onChange(items.map(i => i.id))} data-testid={`select-all-${title}`}>Select all</button>
+        <button type="button" className="text-xs text-primary underline" onClick={() => onChange([])} data-testid={`clear-${title}`}>Clear</button>
+      </div>
       <div className="max-h-40 overflow-auto rounded-md border bg-background p-2 space-y-1">
         {items.map(o => (
           <label key={o.id} className="flex items-center gap-2 text-sm">
