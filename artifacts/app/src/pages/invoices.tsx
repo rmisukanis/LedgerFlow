@@ -27,6 +27,34 @@ interface RunResult {
   data: unknown
 }
 
+interface RepRow { type?: string; Header?: { ColData?: { value?: string }[] }; ColData?: { value?: string }[]; Rows?: { Row?: RepRow[] }; Summary?: { ColData?: { value?: string }[] } }
+
+// Flattens a QuickBooks report into a plain table (null if the response isn't a report).
+function reportToTable(data: unknown): { head: string[]; rows: string[][] } | null {
+  const d = data as { Columns?: { Column?: { ColTitle?: string }[] }; Rows?: { Row?: RepRow[] } } | undefined
+  const cols = d?.Columns?.Column
+  if (!cols || !d?.Rows) return null
+  const rows: string[][] = []
+  const walk = (list: RepRow[], section: string) => {
+    for (const r of list) {
+      if (r.ColData) rows.push([section, ...r.ColData.map(c => c.value ?? "")])
+      if (r.Rows?.Row) walk(r.Rows.Row, r.Header?.ColData?.[0]?.value || section)
+      if (r.Summary?.ColData) rows.push([r.Header?.ColData?.[0]?.value || section, ...r.Summary.ColData.map(c => c.value ?? "")])
+    }
+  }
+  walk(d.Rows.Row ?? [], "")
+  return { head: ["Section", ...cols.map((c, i) => c.ColTitle || `Column ${i + 1}`)], rows }
+}
+
+function downloadCsv(t: { head: string[]; rows: string[][] }) {
+  const esc = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const csv = [t.head, ...t.rows].map(r => r.map(esc).join(",")).join("\r\n")
+  const a = document.createElement("a")
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }))
+  a.download = "report.csv"
+  a.click()
+}
+
 const storeKey = (e: Entry) => `qb-body:${e.method}:${e.folder}:${e.name}`
 const API = `${import.meta.env.BASE_URL}api/qb/explorer`
 
@@ -45,6 +73,8 @@ export default function ApiExplorerPage() {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showRaw, setShowRaw] = useState(false)
+  const table = useMemo(() => reportToTable(result?.data), [result])
 
   useEffect(() => {
     fetch(`${API}/catalog`).then(r => r.json()).then((c: Entry[]) => {
@@ -227,7 +257,24 @@ export default function ApiExplorerPage() {
             <Badge variant="outline" className={result.status < 300 ? "text-emerald-700" : "text-rose-700"}>{result.status}</Badge>
             <span className="text-muted-foreground">{result.ms} ms</span>
           </div>
-          <pre className="p-5 text-xs font-mono overflow-auto max-h-[500px]" data-testid="text-response">
+          {table && (
+            <div className="border-b">
+              <div className="px-5 py-2 flex items-center gap-3">
+                <Button size="sm" onClick={() => downloadCsv(table)} data-testid="button-export-csv">Export CSV (opens in Excel)</Button>
+                <Button size="sm" variant="outline" onClick={() => setShowRaw(s => !s)}>{showRaw ? "Show table" : "Show raw JSON"}</Button>
+                <span className="text-xs text-muted-foreground">{table.rows.length} rows</span>
+              </div>
+              {!showRaw && (
+                <div className="overflow-auto max-h-[500px]">
+                  <table className="text-xs w-full" data-testid="table-report">
+                    <thead className="sticky top-0 bg-muted"><tr>{table.head.map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                    <tbody>{table.rows.map((r, i) => <tr key={i} className="border-t">{r.map((c, j) => <td key={j} className="px-3 py-1.5 whitespace-nowrap">{c}</td>)}</tr>)}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+          <pre className={`p-5 text-xs font-mono overflow-auto max-h-[500px] ${table && !showRaw ? "hidden" : ""}`} data-testid="text-response">
             {typeof result.data === "string" ? result.data : JSON.stringify(result.data, null, 2)}
           </pre>
         </Card>
