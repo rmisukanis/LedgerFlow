@@ -7,6 +7,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatCurrency } from "@/lib/utils"
 import { fmtDate } from "@/lib/dates"
+import { reportToTable, downloadCsv } from "@/lib/report"
+import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 
 const RUN = `${import.meta.env.BASE_URL}api/qb/explorer/run`
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -104,19 +106,25 @@ async function qbGet(path: string, query: string) {
 }
 
 type RptRow = { type?: string; ColData?: { value: string }[]; Rows?: { Row?: RptRow[] } }
-function collect(rows: RptRow[] | undefined, out: Line[]) {
+// Reads rows by column key (QuickBooks returns columns in its own fixed order, not the order requested).
+function collect(rows: RptRow[] | undefined, keys: string[], out: Line[]) {
+  const at = (c: string[], k: string) => c[keys.indexOf(k)] ?? ""
   for (const r of rows ?? []) {
     if (r.type === "Data" && r.ColData) {
       const c = r.ColData.map(x => x.value)
-      const date = parseDate(c[0] ?? "")
-      const cents = parseCents(c[5] ?? "")
-      if (date && /^\d{4}-/.test(c[0]) && cents !== null) {
-        out.push({ date, desc: [c[1], c[3], c[4]].filter(Boolean).join(" · "), cents, ref: c[2] || undefined })
+      const raw = at(c, "tx_date")
+      const date = parseDate(raw)
+      const cents = parseCents(at(c, "subt_nat_amount"))
+      if (date && /^\d{4}-/.test(raw) && cents !== null) {
+        out.push({ date, desc: [at(c, "txn_type"), at(c, "name"), at(c, "memo")].filter(Boolean).join(" · "), cents, ref: at(c, "doc_num") || undefined })
       }
     }
-    collect(r.Rows?.Row, out)
+    collect(r.Rows?.Row, keys, out)
   }
 }
+
+const GL_COLUMNS = "tx_date,txn_type,doc_num,name,memo,split_acc,account_name,subt_nat_amount,rbal_nat_amount"
+const REGISTER_KEYS = ["tx_date", "txn_type", "split_acc", "account_name", "subt_nat_amount", "rbal_nat_amount"]
 
 export default function ReconcilePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -129,6 +137,10 @@ export default function ReconcilePage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<Result | null>(null)
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [macro, setMacro] = useState("")
+  const [register, setRegister] = useState<Record<string, unknown> | null>(null)
 
   useEffect(() => {
     qbGet("/query", new URLSearchParams({ query: "SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Bank', 'Credit Card') MAXRESULTS 200" }).toString())
@@ -176,6 +188,36 @@ export default function ReconcilePage() {
     return { lines, skipped }
   }, [table, cols, flip])
 
+  // Date range sent to QuickBooks: a date_macro wins, then start/end dates, then the CSV's range (± tolerance).
+  const rangeParams = (csv?: { from: string; to: string }) => {
+    const p: Record<string, string> = {}
+    if (macro) p.date_macro = macro
+    else if (startDate || endDate) {
+      if (startDate) p.start_date = startDate
+      if (endDate) p.end_date = endDate
+    } else if (csv) {
+      p.start_date = addDays(csv.from, -tol)
+      p.end_date = addDays(csv.to, tol)
+    } else throw new Error("Choose a date range first: start/end dates or a date macro.")
+    return p
+  }
+  const fetchGl = async (csv?: { from: string; to: string }) => {
+    const q = new URLSearchParams({ account: accountId, ...rangeParams(csv), columns: GL_COLUMNS, accounting_method: "Accrual" }).toString()
+    return qbGet("/reports/GeneralLedger", q)
+  }
+
+  const pull = async () => {
+    if (!accountId) return
+    setBusy(true); setError(null); setRegister(null)
+    try {
+      setRegister(await fetchGl())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not pull the register")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const run = async () => {
     const { lines } = stmtLines
     if (!accountId || lines.length === 0) return
@@ -183,16 +225,12 @@ export default function ReconcilePage() {
     try {
       const dates = lines.map(l => l.date).sort()
       const from = dates[0], to = dates[dates.length - 1]
-      const q = new URLSearchParams({
-        account: accountId,
-        start_date: addDays(from, -tol),
-        end_date: addDays(to, tol),
-        columns: "tx_date,txn_type,doc_num,name,memo,subt_nat_amount",
-        accounting_method: "Accrual",
-      }).toString()
-      const d = await qbGet("/reports/GeneralLedger", q)
+      const d = await fetchGl({ from, to })
+      setRegister(d)
+      const keys = ((d.Columns as { Column?: { MetaData?: { Name: string; Value: string }[] }[] } | undefined)?.Column ?? [])
+        .map(c => c.MetaData?.find(m => m.Name === "ColKey")?.Value ?? "")
       const books: Line[] = []
-      collect((d.Rows as { Row?: RptRow[] } | undefined)?.Row, books)
+      collect((d.Rows as { Row?: RptRow[] } | undefined)?.Row, keys, books)
       setResult(reconcile(lines, books, tol, from, to))
     } catch (e) {
       setError(e instanceof Error ? e.message : "Reconciliation failed")
@@ -200,6 +238,8 @@ export default function ReconcilePage() {
       setBusy(false)
     }
   }
+
+  const regTable = useMemo(() => (register ? reportToTable(register, REGISTER_KEYS, REGISTER_KEYS) : null), [register])
 
   const colSelect = (key: keyof typeof cols, text: string) => (
     <div className="space-y-1.5">
@@ -247,7 +287,7 @@ export default function ReconcilePage() {
               <label className={label}>1. Bank account (QuickBooks register)</label>
               <select className={selectCls} value={accountId} onChange={e => { setAccountId(e.target.value); setResult(null) }} data-testid="select-bank-account">
                 <option value="">{accounts.length ? "Select account" : "Loading…"}</option>
-                {accounts.map(a => <option key={a.id} value={a.id}>{a.name} · {a.type}</option>)}
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.id}) · {a.type}</option>)}
               </select>
             </div>
             <div className="space-y-1.5">
@@ -258,6 +298,28 @@ export default function ReconcilePage() {
                   onChange={e => { const f = e.target.files?.[0]; if (f) void onFile(f); e.target.value = "" }} />
               </label>
             </div>
+          </div>
+
+          <div className="space-y-3 border-t pt-4">
+            <label className={label}>Time frame (optional with a CSV: it defaults to the statement's dates ± tolerance)</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-start">
+              <div className="space-y-1.5"><label className={label}>start_date</label><DateField onIso={x => { setStartDate(x); setResult(null) }} testId="rec-start_date" /></div>
+              <div className="space-y-1.5"><label className={label}>end_date</label><DateField onIso={x => { setEndDate(x); setResult(null) }} testId="rec-end_date" /></div>
+              <div className="space-y-1.5">
+                <label className={label}>date_macro</label>
+                <select className={selectCls} value={macro} onChange={e => { setMacro(e.target.value); setResult(null) }} data-testid="rec-date_macro">
+                  <option value="">— not set —</option>
+                  {DATE_MACROS.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className={label}>&nbsp;</label>
+                <Button variant="outline" onClick={pull} disabled={!accountId || busy} data-testid="button-pull">
+                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks register
+                </Button>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">If a date_macro is chosen it is used instead of the start/end dates.</p>
           </div>
 
           {table && (
@@ -291,6 +353,21 @@ export default function ReconcilePage() {
       </Card>
 
       {error && <p className="text-sm text-rose-600">{error}</p>}
+
+      {regTable && (
+        <Card>
+          <div className="px-5 py-3 border-b flex items-center gap-3">
+            <span className="text-sm font-semibold">QuickBooks register ({regTable.rows.length} rows)</span>
+            <Button size="sm" onClick={() => downloadCsv(regTable)} data-testid="button-export-register">Export CSV</Button>
+          </div>
+          <div className="overflow-auto max-h-[500px]">
+            <table className="text-xs w-full" data-testid="table-register">
+              <thead className="sticky top-0 bg-muted"><tr>{regTable.head.map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+              <tbody>{regTable.rows.map((r, i) => <tr key={i} className="border-t">{r.map((c, j) => <td key={j} className="px-3 py-1.5 whitespace-nowrap">{c}</td>)}</tr>)}</tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {result && (
         <>

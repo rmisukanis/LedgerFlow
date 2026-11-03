@@ -7,7 +7,7 @@ const label = "block text-xs font-semibold text-muted-foreground uppercase track
 const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
 
 // Parameters from https://developer.intuit.com/app/developer/qbo/docs/api/accounting/report-entities/generalledger
-const DATE_MACROS = ["Today", "Yesterday", "This Week", "Last Week", "This Week-to-date", "Last Week-to-date", "Next Week", "Next 4 Weeks", "This Month", "Last Month", "This Month-to-date", "Last Month-to-date", "Next Month", "This Fiscal Quarter", "Last Fiscal Quarter", "This Fiscal Quarter-to-date", "Last Fiscal Quarter-to-date", "Next Fiscal Quarter", "This Fiscal Year", "Last Fiscal Year", "This Fiscal Year-to-date", "Last Fiscal Year-to-date", "Next Fiscal Year"]
+export const DATE_MACROS = ["Today", "Yesterday", "This Week", "Last Week", "This Week-to-date", "Last Week-to-date", "Next Week", "Next 4 Weeks", "This Month", "Last Month", "This Month-to-date", "Last Month-to-date", "Next Month", "This Fiscal Quarter", "Last Fiscal Quarter", "This Fiscal Quarter-to-date", "Last Fiscal Quarter-to-date", "Next Fiscal Quarter", "This Fiscal Year", "Last Fiscal Year", "This Fiscal Year-to-date", "Last Fiscal Year-to-date", "Next Fiscal Year"]
 const ACCOUNT_TYPES = ["AccountsPayable", "AccountsReceivable", "Bank", "CostOfGoodsSold", "CreditCard", "Equity", "Expense", "FixedAsset", "Income", "LongTermLiability", "NonPosting", "OtherAsset", "OtherCurrentAsset", "OtherCurrentLiability", "OtherExpense", "OtherIncome"]
 const SUMMARIZE = ["Total", "Month", "Week", "Days", "Quarter", "Year", "Customers", "Vendors", "Classes", "Departments", "Employees", "ProductsAndServices"]
 const COLUMNS = ["account_name", "chk_print_state", "create_by", "create_date", "cust_name", "doc_num", "emp_name", "inv_date", "is_adj", "is_ap_paid", "is_ar_paid", "is_cleared", "item_name", "last_mod_by", "last_mod_date", "memo", "name", "quantity", "rate", "split_acc", "tx_date", "txn_type", "vend_name", "subt_nat_amount", "rbal_nat_amount", "net_amount", "tax_amount", "tax_code", "account_num", "klass_name", "dept_name"]
@@ -85,7 +85,7 @@ function Lookup({ title, entity, nameCol, value, onChange }: { title: string; en
 }
 
 // Text box that takes MM/DD/YYYY and passes YYYY-MM-DD (what QuickBooks wants) up; "" while invalid.
-function DateField({ onIso, testId }: { onIso: (iso: string) => void; testId: string }) {
+export function DateField({ onIso, testId }: { onIso: (iso: string) => void; testId: string }) {
   const [text, setText] = useState("")
   const bad = text !== "" && !parseUsDate(text)
   return (
