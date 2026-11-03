@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { Loader2, Send, AlertCircle } from "lucide-react"
+import { Loader2, Send, AlertCircle, ChevronsUpDown } from "lucide-react"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -78,6 +80,7 @@ export default function ApiExplorerPage() {
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
+  const [entityOpen, setEntityOpen] = useState(false)
   const table = useMemo(() => reportToTable(result?.data), [result])
 
   useEffect(() => {
@@ -91,7 +94,7 @@ export default function ApiExplorerPage() {
 
   const methods = useMemo(() => [...new Set(catalog.map(e => e.method))], [catalog])
   const folders = useMemo(
-    () => [...new Set(catalog.filter(e => e.method === method).map(e => e.folder))],
+    () => [...new Set(catalog.filter(e => e.method === method).map(e => e.folder))].sort((a, b) => a.localeCompare(b)),
     [catalog, method],
   )
   const ops = useMemo(() => catalog.filter(e => e.method === method && e.folder === folder), [catalog, method, folder])
@@ -179,10 +182,27 @@ export default function ApiExplorerPage() {
             </div>
             <div className="space-y-1.5 w-[200px]">
               <label className={label}>Entity</label>
-              <Select value={folder} onValueChange={onFolder}>
-                <SelectTrigger data-testid="select-entity"><SelectValue placeholder="Select entity" /></SelectTrigger>
-                <SelectContent>{folders.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}</SelectContent>
-              </Select>
+              <Popover open={entityOpen} onOpenChange={setEntityOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" role="combobox" className="w-full justify-between font-normal" data-testid="select-entity">
+                    <span className="truncate">{folder || "Select entity"}</span>
+                    <ChevronsUpDown className="w-4 h-4 opacity-50 shrink-0" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[220px] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Type to search…" />
+                    <CommandList>
+                      <CommandEmpty>No entity found.</CommandEmpty>
+                      <CommandGroup>
+                        {folders.map(f => (
+                          <CommandItem key={f} value={f} onSelect={() => { onFolder(f); setEntityOpen(false) }}>{f}</CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
             <div className="space-y-1.5 w-[200px]">
               <label className={label}>Operation</label>
