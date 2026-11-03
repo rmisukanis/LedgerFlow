@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatCurrency } from "@/lib/utils"
+import { fmtDate } from "@/lib/dates"
 
 const RUN = `${import.meta.env.BASE_URL}api/qb/explorer/run`
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -221,7 +222,7 @@ export default function ReconcilePage() {
           <tbody>
             {lines.map((l, i) => (
               <tr key={i} className="border-b last:border-0">
-                <td className="px-5 py-2 font-mono text-xs w-[110px]">{l.date}</td>
+                <td className="px-5 py-2 font-mono text-xs w-[110px]">{fmtDate(l.date)}</td>
                 <td className="px-2 py-2">{l.desc}{l.ref && <span className="text-muted-foreground"> #{l.ref}</span>}</td>
                 <td className={`px-5 py-2 text-right tabular-nums ${l.cents < 0 ? "text-rose-600" : "text-emerald-700"}`}>{money(l.cents)}</td>
               </tr>
@@ -311,7 +312,7 @@ export default function ReconcilePage() {
           </Card>
           {lineTable("On the statement, not in QuickBooks", result.stmtOnly, "Every statement line was found in QuickBooks.")}
           {lineTable("In QuickBooks, not on the statement", result.booksOnly, "Every QuickBooks transaction in this period is on the statement.")}
-          {lineTable("Matched", result.matched.map(m => ({ ...m.s, desc: `${m.s.desc}  ↔  ${m.r.desc} (${m.r.date})` })), "Nothing matched.")}
+          {lineTable("Matched", result.matched.map(m => ({ ...m.s, desc: `${m.s.desc}  ↔  ${m.r.desc} (${fmtDate(m.r.date)})` })), "Nothing matched.")}
         </>
       )}
     </div>

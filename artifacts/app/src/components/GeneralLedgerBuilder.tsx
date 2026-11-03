@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { Input } from "@/components/ui/input"
+import { parseUsDate } from "@/lib/dates"
 
 const RUN = `${import.meta.env.BASE_URL}api/qb/explorer/run`
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -83,6 +84,24 @@ function Lookup({ title, entity, nameCol, value, onChange }: { title: string; en
   return <Check title={title} options={opts} value={value} onChange={onChange} search />
 }
 
+// Text box that takes MM/DD/YYYY and passes YYYY-MM-DD (what QuickBooks wants) up; "" while invalid.
+function DateField({ onIso, testId }: { onIso: (iso: string) => void; testId: string }) {
+  const [text, setText] = useState("")
+  const bad = text !== "" && !parseUsDate(text)
+  return (
+    <>
+      <Input
+        value={text}
+        placeholder="MM/DD/YYYY"
+        className={bad ? "border-rose-400" : ""}
+        onChange={e => { setText(e.target.value); onIso(parseUsDate(e.target.value)) }}
+        data-testid={testId}
+      />
+      {bad && <p className="text-xs text-rose-600">Use MM/DD/YYYY</p>}
+    </>
+  )
+}
+
 export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) => void }) {
   const [v, setV] = useState<Values>({})
   const get = (k: string) => (v[k] as string) ?? ""
@@ -114,8 +133,8 @@ export function GeneralLedgerBuilder({ onChange }: { onChange: (query: string) =
     <div className="space-y-4" data-testid="gl-builder">
       <p className="text-xs text-muted-foreground">All of these are optional. Only the ones you set are added to the request.</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="space-y-1.5"><label className={label}>start_date</label><Input type="date" value={get("start_date")} onChange={e => set("start_date", e.target.value)} data-testid="gl-start_date" /></div>
-        <div className="space-y-1.5"><label className={label}>end_date</label><Input type="date" value={get("end_date")} onChange={e => set("end_date", e.target.value)} data-testid="gl-end_date" /></div>
+        <div className="space-y-1.5"><label className={label}>start_date</label><DateField onIso={x => set("start_date", x)} testId="gl-start_date" /></div>
+        <div className="space-y-1.5"><label className={label}>end_date</label><DateField onIso={x => set("end_date", x)} testId="gl-end_date" /></div>
         {simpleSelect("date_macro", "date_macro", DATE_MACROS)}
         {simpleSelect("accounting_method", "accounting_method", ["Cash", "Accrual"])}
         {simpleSelect("account_type", "account_type", ACCOUNT_TYPES)}

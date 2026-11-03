@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Loader2, Send, AlertCircle, ChevronsUpDown } from "lucide-react"
+import { fmtDate } from "@/lib/dates"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 
@@ -45,6 +46,7 @@ function reportToTable(data: unknown): { head: string[]; rows: string[][] } | nu
     }
   }
   walk(d.Rows.Row ?? [], "")
+  for (const r of rows) for (let i = 0; i < r.length; i++) r[i] = fmtDate(r[i])
   return { head: ["Section", ...cols.map((c, i) => {
     const key = c.MetaData?.find(m => m.Name === "ColKey")?.Value
     const title = c.ColTitle || `Column ${i + 1}`
