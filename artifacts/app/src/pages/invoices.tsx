@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { GeneralLedgerBuilder } from "@/components/GeneralLedgerBuilder"
 import { useGetQbStatus } from "@workspace/api-client-react"
 
 interface Entry {
@@ -47,6 +48,7 @@ export default function ApiExplorerPage() {
 
   useEffect(() => {
     fetch(`${API}/catalog`).then(r => r.json()).then((c: Entry[]) => {
+      c.push({ folder: "GeneralLedger", name: "Read", method: "GET", path: "/reports/GeneralLedger", query: "", body: "", contentType: "", description: "General Ledger report: every transaction in each account over a period." })
       setCatalog(c)
       const e = c.find(x => x.method === "GET" && x.folder === "Invoice") ?? c[0]
       if (e) { setMethod(e.method); setFolder(e.folder); loadEntry(e) }
@@ -175,6 +177,7 @@ export default function ApiExplorerPage() {
                 <span>/v3/company/{"{realmId}"}{resolvedPath}{query ? `?${query}` : ""}</span>
               </div>
               {entry.description && <p className="text-xs text-muted-foreground">{entry.description}</p>}
+              {entry.folder === "GeneralLedger" && <GeneralLedgerBuilder onChange={setQuery} />}
               <div className="space-y-1.5">
                 <label className={label}>Query params</label>
                 <Input value={query} onChange={e => setQuery(e.target.value)} className="font-mono text-xs" />
