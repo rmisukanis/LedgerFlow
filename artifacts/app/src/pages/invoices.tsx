@@ -136,6 +136,9 @@ export default function ApiExplorerPage() {
           <CardContent className="p-4 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-amber-600" />
             <p className="text-sm text-amber-800">QuickBooks is not connected.</p>
+            <Button asChild className="ml-auto">
+              <a href={`${import.meta.env.BASE_URL}api/qb/auth/connect`}>Connect QuickBooks</a>
+            </Button>
           </CardContent>
         </Card>
       )}

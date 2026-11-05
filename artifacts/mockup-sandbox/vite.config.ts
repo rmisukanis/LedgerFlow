@@ -5,6 +5,13 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
+import { existsSync } from "node:fs";
+
+const envFile = path.resolve(import.meta.dirname, "../../.env");
+if (existsSync(envFile)) {
+  process.loadEnvFile(envFile);
+}
+
 const rawPort = process.env.PORT;
 
 if (!rawPort) {

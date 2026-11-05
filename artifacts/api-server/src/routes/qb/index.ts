@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import OAuthClient from "intuit-oauth";
 import { db, qbTokensTable } from "@workspace/db";
-import { createOAuthClient, getStoredToken, isConnected, queryQuickBooks, escapeQbString, QbNotConnectedError, QbUpstreamError } from "../../lib/qb-client";
+import { createOAuthClient, getStoredToken, isConnected, queryQuickBooks, escapeQbString, getQbApiBase, QbNotConnectedError, QbUpstreamError } from "../../lib/qb-client";
 import {
   GetQbStatusResponse,
   GetQbAuthUrlResponse,
@@ -13,6 +13,11 @@ import {
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
+
+function webAppPath(path: string): string {
+  const port = process.env.WEB_PORT ?? "5173";
+  return `http://localhost:${port}${path}`;
+}
 
 // GET /qb/status
 router.get("/qb/status", async (req, res): Promise<void> => {
@@ -41,18 +46,29 @@ router.get("/qb/auth/url", async (req, res): Promise<void> => {
   res.json(GetQbAuthUrlResponse.parse({ url: authUri }));
 });
 
+// GET /qb/auth/connect — send the browser to QuickBooks. One sign-in is stored in qb_tokens.
+router.get("/qb/auth/connect", async (req, res): Promise<void> => {
+  const oauthClient = createOAuthClient();
+  const authUri = oauthClient.authorizeUri({
+    scope: [OAuthClient.scopes.Accounting, OAuthClient.scopes.OpenId],
+    state: crypto.randomUUID(),
+  });
+
+  res.redirect(authUri);
+});
+
 // GET /qb/auth/callback
 router.get("/qb/auth/callback", async (req, res): Promise<void> => {
   const { error, code, realmId } = req.query as Record<string, string>;
 
   if (error) {
     req.log.warn({ error }, "QuickBooks OAuth error");
-    res.redirect(`/?qb_error=${encodeURIComponent(error)}`);
+    res.redirect(webAppPath(`/?qb_error=${encodeURIComponent(error)}`));
     return;
   }
 
   if (!code || !realmId) {
-    res.redirect("/?qb_error=missing_params");
+    res.redirect(webAppPath("/?qb_error=missing_params"));
     return;
   }
 
@@ -66,7 +82,7 @@ router.get("/qb/auth/callback", async (req, res): Promise<void> => {
     let companyName: string | null = null;
     try {
       const companyInfoResponse = await oauthClient.makeApiCall({
-        url: `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}`,
+        url: `${getQbApiBase()}/v3/company/${realmId}/companyinfo/${realmId}`,
         method: "GET",
       });
       const companyData = (companyInfoResponse.json ?? {}) as Record<string, unknown>;
@@ -93,10 +109,10 @@ router.get("/qb/auth/callback", async (req, res): Promise<void> => {
     });
 
     req.log.info({ realmId, companyName }, "QuickBooks connected successfully");
-    res.redirect("/?qb_connected=true");
+    res.redirect(webAppPath("/?qb_connected=true"));
   } catch (err) {
     req.log.error({ err }, "QuickBooks OAuth callback failed");
-    res.redirect("/?qb_error=callback_failed");
+    res.redirect(webAppPath("/?qb_error=callback_failed"));
   }
 });
 

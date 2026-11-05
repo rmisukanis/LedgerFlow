@@ -47,3 +47,9 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Local secrets. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+.neon

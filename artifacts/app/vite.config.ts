@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import path from 'path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -5,7 +6,12 @@ import { defineConfig } from 'vite';
 
 import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
 
-const rawPort = process.env.PORT;
+const envFile = path.resolve(import.meta.dirname, '../../.env');
+if (existsSync(envFile)) {
+  process.loadEnvFile(envFile);
+}
+
+const rawPort = process.env.WEB_PORT ?? process.env.PORT;
 
 if (!rawPort) {
   throw new Error(
@@ -24,6 +30,14 @@ const basePath = process.env.BASE_PATH;
 if (!basePath) {
   throw new Error(
     'BASE_PATH environment variable is required but was not provided.',
+  );
+}
+
+const apiPort = process.env.PORT;
+
+if (!apiPort) {
+  throw new Error(
+    'PORT environment variable is required but was not provided.',
   );
 }
 
@@ -69,6 +83,9 @@ export default defineConfig({
     strictPort: true,
     host: '0.0.0.0',
     allowedHosts: true,
+    proxy: {
+      '/api': `http://localhost:${apiPort}`,
+    },
     fs: {
       strict: true,
     },

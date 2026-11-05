@@ -7,11 +7,12 @@ const QB_CLIENT_ID = process.env.QB_CLIENT_ID ?? "";
 const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET ?? "";
 const QB_ENVIRONMENT =
   (process.env.QB_ENVIRONMENT as "sandbox" | "production") ?? "sandbox";
+const QB_PORT = process.env.PORT ?? "5000";
 
-export function getRedirectUri(): string {
-  const domain = process.env.REPLIT_DEV_DOMAIN ?? "localhost";
-  return `https://${domain}/api/qb/auth/callback`;
-}
+  export function getRedirectUri(): string {
+    return `http://localhost:${QB_PORT}/api/qb/auth/callback`;
+  }
+
 
 export function createOAuthClient(): OAuthClient {
   return new OAuthClient({

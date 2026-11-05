@@ -29,7 +29,7 @@ router.post("/qb/explorer/run", async (req, res): Promise<void> => {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (method === "POST") headers["Content-Type"] = contentType || "application/json";
     const r = await client.makeApiCall({ url, method, headers, body: method === "POST" ? String(body ?? "") : undefined });
-    res.json({ status: r.response?.status ?? 200, ms: Date.now() - started, url, data: r.json ?? r.body });
+    res.json({ status: r.status ?? 200, ms: Date.now() - started, url, data: r.json ?? r.body });
   } catch (err) {
     const e = err as { authResponse?: { response?: { status?: number }; json?: unknown; body?: unknown }; message?: string };
     res.json({
