@@ -75,6 +75,24 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
       { name: "Line.Description", kind: "text" },
     ],
   },
+  Deposit: {
+    fields: [
+      { name: "DepositToAccountRef", kind: "ref", required: true, hint: "Bank account the money is deposited into" },
+      { name: "TxnDate", kind: "text", hint: "YYYY-MM-DD" },
+      { name: "PrivateNote", kind: "text" },
+      { name: "CurrencyRef", kind: "ref", hint: "Currency code, e.g. USD (required if multicurrency is on)" },
+      { name: "DepartmentRef", kind: "ref", hint: "Department Id" },
+      { name: "ExchangeRate", kind: "number" },
+    ],
+    lineFields: [
+      { name: "Line.Amount", kind: "number", required: true },
+      { name: "Line.AccountRef", kind: "ref", required: true, hint: "Account the line comes from, such as an income account" },
+      { name: "Line.EntityRef", kind: "ref", hint: "Customer Id, when the line is for a customer" },
+      { name: "Line.Description", kind: "text" },
+      { name: "Line.PaymentMethodRef", kind: "ref", hint: "Payment method Id" },
+      { name: "Line.CheckNum", kind: "text" },
+    ],
+  },
   Invoice: {
     fields: [
       { name: "CustomerRef", kind: "ref", required: true, hint: "Customer Id" },

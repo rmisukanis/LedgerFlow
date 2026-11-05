@@ -21,8 +21,11 @@ const REF_SOURCES: Record<string, [string, string, string?]> = {
   ParentRef: ["Customer", "DisplayName"],
   APAccountRef: ["Account", "Name"],
   AccountRef: ["Account", "Name", "WHERE AccountType IN ('Bank', 'Credit Card')"],
+  DepositToAccountRef: ["Account", "Name", "WHERE AccountType = 'Bank'"],
   EntityRef: ["Vendor", "DisplayName"],
   "Line.AccountRef": ["Account", "Name"],
+  "Line.EntityRef": ["Customer", "DisplayName"],
+  "Line.PaymentMethodRef": ["PaymentMethod", "Name"],
   "Line.CustomerRef": ["Customer", "DisplayName"],
   "Line.ItemRef": ["Item", "Name"],
   DepartmentRef: ["Department", "Name"],
@@ -65,7 +68,14 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   }
   const line: Obj = { Amount: num("Line.Amount") }
   if (get("Line.Description")) line.Description = get("Line.Description")
-  if (entity === "Bill" || entity === "Purchase") {
+  if (entity === "Deposit") {
+    line.DetailType = "DepositLineDetail"
+    const d: Obj = { AccountRef: { value: get("Line.AccountRef") } }
+    if (get("Line.EntityRef")) d.Entity = { value: get("Line.EntityRef"), type: "Customer" }
+    if (get("Line.PaymentMethodRef")) d.PaymentMethodRef = { value: get("Line.PaymentMethodRef") }
+    if (get("Line.CheckNum")) d.CheckNum = get("Line.CheckNum")
+    line.DepositLineDetail = d
+  } else if (entity === "Bill" || entity === "Purchase") {
     line.DetailType = "AccountBasedExpenseLineDetail"
     const d: Obj = { AccountRef: { value: get("Line.AccountRef") } }
     if (get("Line.CustomerRef")) d.CustomerRef = { value: get("Line.CustomerRef") }
@@ -82,7 +92,7 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
 
 function describe(entity: string, o: Obj | undefined, bId: unknown): string {
   if (!o) return `Record ${bId}: created`
-  const ref = (o.VendorRef ?? o.CustomerRef ?? o.EntityRef) as { name?: string } | undefined
+  const ref = (o.VendorRef ?? o.CustomerRef ?? o.EntityRef ?? o.DepositToAccountRef) as { name?: string } | undefined
   const name = ref?.name ?? (o.DisplayName as string | undefined)
   const amt = o.TotalAmt !== undefined ? ` = ${Number(o.TotalAmt).toLocaleString("en-US", { style: "currency", currency: "USD" })}` : ""
   return `${entity} ${o.Id}${amt}${name ? ` — ${name}` : ""}`
