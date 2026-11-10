@@ -6,6 +6,7 @@ import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { Layout } from '@/components/Layout';
 import ApiExplorer from '@/pages/invoices';
 import BatchBuilder from '@/pages/batch';
+import Analysis from '@/pages/analysis';
 import Reconcile from '@/pages/reconcile';
 
 const queryClient = new QueryClient({
@@ -26,6 +27,7 @@ function Router() {
         <Route path="/invoices" component={ApiExplorer} />
         <Route path="/api-explorer" component={ApiExplorer} />
         <Route path="/batch" component={BatchBuilder} />
+        <Route path="/analysis" component={Analysis} />
         <Route path="/reconcile" component={Reconcile} />
         <Route component={NotFound} />
       </Switch>
