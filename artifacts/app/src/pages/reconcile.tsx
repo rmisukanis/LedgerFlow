@@ -124,8 +124,8 @@ function collect(rows: RptRow[] | undefined, keys: string[], out: Line[]) {
   }
 }
 
-const GL_COLUMNS = "tx_date,txn_type,doc_num,name,memo,split_acc,account_name,subt_nat_amount,rbal_nat_amount"
-const REGISTER_KEYS = ["tx_date", "txn_type", "split_acc", "account_name", "subt_nat_amount", "rbal_nat_amount"]
+const GL_COLUMNS = "tx_date,is_cleared,txn_type,doc_num,name,memo,split_acc,account_name,subt_nat_amount,rbal_nat_amount"
+const REGISTER_KEYS = ["tx_date", "is_cleared", "txn_type", "split_acc", "account_name", "subt_nat_amount", "rbal_nat_amount"]
 
 export default function ReconcilePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
