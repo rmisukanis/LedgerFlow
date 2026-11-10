@@ -62,7 +62,6 @@ function parseCents(s: string): number | null {
 }
 
 const dayNum = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 86400000
-const addDays = (iso: string, d: number) => new Date((dayNum(iso) + d) * 86400000).toISOString().slice(0, 10)
 const money = (cents: number) => formatCurrency(cents / 100)
 
 interface Result {
@@ -108,7 +107,7 @@ async function qbGet(path: string, query: string) {
 
 type RptRow = { type?: string; ColData?: { value: string }[]; Rows?: { Row?: RptRow[] } }
 // Reads rows by column key (QuickBooks returns columns in its own fixed order, not the order requested).
-function collect(rows: RptRow[] | undefined, keys: string[], out: Line[]) {
+function collect(rows: RptRow[] | undefined, keys: string[], out: Line[], notReconciled: boolean) {
   const at = (c: string[], k: string) => c[keys.indexOf(k)] ?? ""
   for (const r of rows ?? []) {
     if (r.type === "Data" && r.ColData) {
@@ -116,16 +115,33 @@ function collect(rows: RptRow[] | undefined, keys: string[], out: Line[]) {
       const raw = at(c, "tx_date")
       const date = parseDate(raw)
       const cents = parseCents(at(c, "subt_nat_amount"))
+      if (notReconciled && reconciled(at(c, "is_cleared"))) continue
       if (date && /^\d{4}-/.test(raw) && cents !== null) {
         out.push({ date, desc: [at(c, "txn_type"), at(c, "name"), at(c, "memo")].filter(Boolean).join(" · "), cents, ref: at(c, "doc_num") || undefined })
       }
     }
-    collect(r.Rows?.Row, keys, out)
+    collect(r.Rows?.Row, keys, out, notReconciled)
   }
 }
 
 const GL_COLUMNS = "tx_date,is_cleared,txn_type,doc_num,name,memo,split_acc,account_name,subt_nat_amount,rbal_nat_amount"
 const REGISTER_KEYS = ["tx_date", "is_cleared", "txn_type", "split_acc", "account_name", "subt_nat_amount", "rbal_nat_amount"]
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+function presetPeriod(now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  return { month: d.getMonth() + 1, year: d.getFullYear() }
+}
+
+function monthBounds(year: number, month: number) {
+  const mm = String(month).padStart(2, "0")
+  const last = new Date(year, month, 0).getDate()
+  return { start: `${year}-${mm}-01`, end: `${year}-${mm}-${String(last).padStart(2, "0")}` }
+}
+
+const reconciled = (value: string) => value.trim().toUpperCase() === "R"
+const PRESET = presetPeriod()
+const YEAR_OPTIONS = Array.from(new Set([PRESET.year, ...Array.from({ length: 8 }, (_, i) => new Date().getFullYear() - i)])).sort((a, b) => b - a)
 
 export default function ReconcilePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -140,6 +156,9 @@ export default function ReconcilePage() {
   const [result, setResult] = useState<Result | null>(null)
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
+  const [month, setMonth] = useState(PRESET.month)
+  const [year, setYear] = useState(PRESET.year)
+  const [notReconciled, setNotReconciled] = useState(false)
   const [macro, setMacro] = useState("")
   const [register, setRegister] = useState<Record<string, unknown> | null>(null)
 
@@ -189,21 +208,22 @@ export default function ReconcilePage() {
     return { lines, skipped }
   }, [table, cols, flip])
 
-  // Date range sent to QuickBooks: a date_macro wins, then start/end dates, then the CSV's range (± tolerance).
-  const rangeParams = (csv?: { from: string; to: string }) => {
+  // Date range sent to QuickBooks: a date_macro wins, then custom start/end dates, then the selected month.
+  const rangeParams = () => {
     const p: Record<string, string> = {}
     if (macro) p.date_macro = macro
     else if (startDate || endDate) {
       if (startDate) p.start_date = startDate
       if (endDate) p.end_date = endDate
-    } else if (csv) {
-      p.start_date = addDays(csv.from, -tol)
-      p.end_date = addDays(csv.to, tol)
-    } else throw new Error("Choose a date range first: start/end dates or a date macro.")
+    } else {
+      const bounds = monthBounds(year, month)
+      p.start_date = bounds.start
+      p.end_date = bounds.end
+    }
     return p
   }
-  const fetchGl = async (csv?: { from: string; to: string }) => {
-    const q = new URLSearchParams({ account: accountId, ...rangeParams(csv), columns: GL_COLUMNS, accounting_method: "Accrual" }).toString()
+  const fetchGl = async () => {
+    const q = new URLSearchParams({ account: accountId, ...rangeParams(), columns: GL_COLUMNS, accounting_method: "Accrual" }).toString()
     return qbGet("/reports/GeneralLedger", q)
   }
 
@@ -225,13 +245,19 @@ export default function ReconcilePage() {
     setBusy(true); setError(null); setResult(null)
     try {
       const dates = lines.map(l => l.date).sort()
-      const from = dates[0], to = dates[dates.length - 1]
-      const d = await fetchGl({ from, to })
+      const period = macro
+        ? null
+        : (startDate || endDate)
+          ? { start: startDate || "0000-01-01", end: endDate || "9999-12-31" }
+          : monthBounds(year, month)
+      const from = period?.start ?? dates[0]
+      const to = period?.end ?? dates[dates.length - 1]
+      const d = await fetchGl()
       setRegister(d)
       const keys = ((d.Columns as { Column?: { MetaData?: { Name: string; Value: string }[] }[] } | undefined)?.Column ?? [])
         .map(c => c.MetaData?.find(m => m.Name === "ColKey")?.Value ?? "")
       const books: Line[] = []
-      collect((d.Rows as { Row?: RptRow[] } | undefined)?.Row, keys, books)
+      collect((d.Rows as { Row?: RptRow[] } | undefined)?.Row, keys, books, notReconciled)
       setResult(reconcile(lines, books, tol, from, to))
     } catch (e) {
       setError(e instanceof Error ? e.message : "Reconciliation failed")
@@ -240,7 +266,14 @@ export default function ReconcilePage() {
     }
   }
 
-  const regTable = useMemo(() => (register ? reportToTable(register, REGISTER_KEYS, REGISTER_KEYS) : null), [register])
+  const regTable = useMemo(() => {
+    if (!register) return null
+    const table = reportToTable(register, REGISTER_KEYS, REGISTER_KEYS)
+    if (!table || !notReconciled) return table
+    const idx = table.head.findIndex(h => h === "is_cleared" || h.endsWith("= is_cleared"))
+    if (idx < 0) return table
+    return { ...table, rows: table.rows.filter(r => !reconciled(r[idx] ?? "")) }
+  }, [register, notReconciled])
 
   const colSelect = (key: keyof typeof cols, text: string) => (
     <div className="space-y-1.5">
@@ -302,7 +335,34 @@ export default function ReconcilePage() {
           </div>
 
           <div className="space-y-3 border-t pt-4">
-            <label className={label}>Time frame (optional with a CSV: it defaults to the statement's dates ± tolerance)</label>
+            <label className={label}>Time frame</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-start">
+              <div className="space-y-1.5">
+                <label className={label}>Month</label>
+                <select className={selectCls} value={month} onChange={e => { setMonth(Number(e.target.value)); setResult(null) }} data-testid="select-month">
+                  {MONTHS.map((name, i) => <option key={name} value={i + 1}>{name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className={label}>Year</label>
+                <select className={selectCls} value={year} onChange={e => { setYear(Number(e.target.value)); setResult(null) }} data-testid="select-year">
+                  {YEAR_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className={label}>&nbsp;</label>
+                <label className="flex items-center gap-2 h-10 text-sm">
+                  <input type="checkbox" checked={notReconciled} data-testid="checkbox-not-reconciled" onChange={e => { setNotReconciled(e.target.checked); setResult(null) }} />
+                  Not Reconciled
+                </label>
+              </div>
+              <div className="space-y-1.5">
+                <label className={label}>&nbsp;</label>
+                <Button variant="outline" onClick={pull} disabled={!accountId || busy} data-testid="button-pull">
+                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks Register
+                </Button>
+              </div>
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-start">
               <div className="space-y-1.5"><label className={label}>start_date</label><DateField onIso={x => { setStartDate(x); setResult(null) }} testId="rec-start_date" /></div>
               <div className="space-y-1.5"><label className={label}>end_date</label><DateField onIso={x => { setEndDate(x); setResult(null) }} testId="rec-end_date" /></div>
@@ -313,14 +373,8 @@ export default function ReconcilePage() {
                   {DATE_MACROS.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
               </div>
-              <div className="space-y-1.5">
-                <label className={label}>&nbsp;</label>
-                <Button variant="outline" onClick={pull} disabled={!accountId || busy} data-testid="button-pull">
-                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks Register
-                </Button>
-              </div>
             </div>
-            <p className="text-xs text-muted-foreground">If a date_macro is chosen it is used instead of the start/end dates.</p>
+            <p className="text-xs text-muted-foreground">The month and year set the period. A date macro or start/end dates replace that period. Not Reconciled leaves out register lines whose cleared status is R.</p>
           </div>
 
           {table && (
