@@ -4,10 +4,10 @@ import { ChevronsUpDown, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { formatCurrency } from "@/lib/utils"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
+import { isPayment, loadPayments, paymentIdsOf, reviewRows, type ReviewRow } from "@/lib/invoice-chain"
+import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 
-const RUN = `${import.meta.env.BASE_URL}api/qb/explorer/run`
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
 
@@ -20,17 +20,13 @@ const TYPES = [
 type TxnKind = (typeof TYPES)[number]["id"]
 
 interface Customer { id: string; name: string }
-interface Link { id: string; type: string }
-interface InvoiceRow {
-  id: string
-  docNumber: string
-  linkId: string
-  linkType: string
-  customerId: string
-  customerName: string
-  total: string
-}
 
+const INVOICE_COLUMNS = ["Id", "DocNumber", "TxnDate", "LinkedTxn Id", "LinkedTxn Type", "Customer Id", "Customer Name", "Total"]
+const PAYMENT_COLUMNS = ["DepositToAccountRef", "TotalAmt", "Id", "TxnDate", "LinkedTxn Id", "LinkedTxn Type"]
+const invoiceHead = { backgroundColor: "#DBEAFE", color: "#2563EB", boxShadow: "inset 0 -2px 0 #2563EB" }
+const invoiceCell = { backgroundColor: "#DBEAFE" }
+const paymentHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "inset 0 -2px 0 #16A34A" }
+const paymentCell = { backgroundColor: "#DCFCE7" }
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
 function presetPeriod(now = new Date()) {
@@ -48,7 +44,7 @@ const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 const shift = (d: Date, days: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + days)
 const span = (start: Date, end: Date) => ({ start: iso(start), end: iso(end) })
 
-// QuickBooks report date_macro values, turned into TxnDate bounds. The Invoice query has no date_macro parameter.
+// The case names are the QuickBooks date_macro values (the option value), not the shorter dropdown label. The Invoice query has no date_macro parameter, so these become TxnDate bounds.
 function macroRange(name: string, today: Date, fiscalStartMonth: number) {
   const day = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   const weekStart = shift(day, -day.getDay())
@@ -104,57 +100,6 @@ function macroRange(name: string, today: Date, fiscalStartMonth: number) {
 
 const PRESET = presetPeriod()
 const YEAR_OPTIONS = Array.from(new Set([PRESET.year, ...Array.from({ length: 8 }, (_, i) => new Date().getFullYear() - i)])).sort((a, b) => b - a)
-const q = (s: string) => s.replace(/'/g, "\\'")
-
-async function qbGet(path: string, query: string) {
-  const r = await fetch(RUN, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ method: "GET", path, query }),
-  })
-  const j = await r.json()
-  if (!r.ok || j.status >= 300) throw new Error(j.data?.Fault?.Error?.[0]?.Detail ?? j.data?.detail ?? j.error ?? "QuickBooks request failed")
-  return j.data as Record<string, unknown>
-}
-
-function linksOf(inv: Record<string, unknown>): Link[] {
-  const seen = new Set<string>()
-  const out: Link[] = []
-  const add = (list: unknown) => {
-    for (const item of Array.isArray(list) ? list : []) {
-      const link = item as { TxnId?: string; TxnType?: string }
-      const id = String(link.TxnId ?? "")
-      const type = String(link.TxnType ?? "")
-      const key = `${type}:${id}`
-      if (!id && !type) continue
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push({ id, type })
-    }
-  }
-  add(inv.LinkedTxn)
-  for (const line of Array.isArray(inv.Line) ? inv.Line : []) add((line as { LinkedTxn?: unknown }).LinkedTxn)
-  return out
-}
-
-function invoiceRows(raw: Record<string, unknown>[]): InvoiceRow[] {
-  const rows: InvoiceRow[] = []
-  for (const inv of raw) {
-    const customer = (inv.CustomerRef as { value?: string; name?: string } | undefined) ?? {}
-    const total = formatCurrency(Number(inv.TotalAmt ?? 0))
-    const base = {
-      id: String(inv.Id ?? ""),
-      docNumber: String(inv.DocNumber ?? ""),
-      customerId: String(customer.value ?? ""),
-      customerName: String(customer.name ?? ""),
-      total,
-    }
-    const links = linksOf(inv)
-    if (links.length === 0) rows.push({ ...base, linkId: "", linkType: "" })
-    else for (const link of links) rows.push({ ...base, linkId: link.id, linkType: link.type })
-  }
-  return rows
-}
 
 export default function AnalysisPage() {
   const [kind, setKind] = useState<TxnKind | "">("")
@@ -173,18 +118,19 @@ export default function AnalysisPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [rows, setRows] = useState<InvoiceRow[] | null>(null)
+  const [rows, setRows] = useState<ReviewRow[] | null>(null)
+  const [invoiceCount, setInvoiceCount] = useState<number | null>(null)
 
   useEffect(() => {
-    qbGet("/query", new URLSearchParams({ query: "SELECT Id, DisplayName FROM Customer MAXRESULTS 1000" }).toString())
+    qbQuery("SELECT Id, DisplayName FROM Customer MAXRESULTS 1000")
       .then(d => {
-        const list = ((d.QueryResponse as Record<string, unknown>)?.Customer as { Id: string; DisplayName?: string }[]) ?? []
+        const list = qbList<{ Id: string; DisplayName?: string }>(d, "Customer")
         setCustomers(list.map(c => ({ id: String(c.Id), name: String(c.DisplayName ?? c.Id) })).sort((a, b) => a.name.localeCompare(b.name)))
       })
       .catch(e => setError(e instanceof Error ? e.message : "Could not load customers"))
-    qbGet("/query", new URLSearchParams({ query: "SELECT * FROM CompanyInfo" }).toString())
+    qbQuery("SELECT * FROM CompanyInfo")
       .then(d => {
-        const info = ((d.QueryResponse as Record<string, unknown>)?.CompanyInfo as { FiscalYearStartMonth?: string }[])?.[0]
+        const info = qbList<{ FiscalYearStartMonth?: string }>(d, "CompanyInfo")[0]
         const n = Number(info?.FiscalYearStartMonth)
         if (n >= 1 && n <= 12) setFiscalStart(n)
       })
@@ -208,6 +154,8 @@ export default function AnalysisPage() {
     return () => document.removeEventListener("mousedown", close)
   }, [customerOpen])
 
+  const showPayments = rows?.some(r => isPayment(r.linkType)) ?? false
+
   const period = useMemo(() => {
     if (macro) return macroRange(macro, new Date(), fiscalStart) ?? monthBounds(year, month)
     if (startDate || endDate) return { start: startDate, end: endDate }
@@ -220,6 +168,7 @@ export default function AnalysisPage() {
     setError(null)
     setNotice(null)
     setRows(null)
+    setInvoiceCount(null)
     setUsedRange("")
     try {
       if (kind !== "invoice") {
@@ -227,16 +176,23 @@ export default function AnalysisPage() {
         return
       }
       const where: string[] = []
-      if (period.start) where.push(`TxnDate >= '${q(period.start)}'`)
-      if (period.end) where.push(`TxnDate <= '${q(period.end)}'`)
+      if (period.start) where.push(`TxnDate >= '${qbQuote(period.start)}'`)
+      if (period.end) where.push(`TxnDate <= '${qbQuote(period.end)}'`)
       if (where.length === 0) throw new Error("Choose a month, a start or end date, or a date macro.")
       setUsedRange([period.start, period.end].filter(Boolean).join(" to "))
-      if (customerId) where.push(`CustomerRef = '${q(customerId)}'`)
+      if (customerId) where.push(`CustomerRef = '${qbQuote(customerId)}'`)
       const query = `SELECT * FROM Invoice WHERE ${where.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS 1000`
-      const data = await qbGet("/query", new URLSearchParams({ query }).toString())
-      const list = ((data.QueryResponse as Record<string, unknown>)?.Invoice as Record<string, unknown>[]) ?? []
-      setRows(invoiceRows(list))
-      if (list.length === 1000) setNotice(prev => [prev, "QuickBooks returned 1000 invoices, so later ones are not in this list."].filter(Boolean).join(" "))
+      const list = qbList<Record<string, unknown>>(await qbQuery(query), "Invoice")
+      const paymentIds = paymentIdsOf(list)
+      const payments = await loadPayments(paymentIds)
+      setInvoiceCount(list.length)
+      setRows(reviewRows(list, payments))
+      const missing = paymentIds.filter(id => !payments.has(id))
+      const notes = [
+        list.length === 1000 ? "QuickBooks returned 1000 invoices, so later ones are not in this list." : "",
+        missing.length > 0 ? `No Payment was returned for ${missing.length} linked id${missing.length === 1 ? "" : "s"}.` : "",
+      ].filter(Boolean)
+      if (notes.length > 0) setNotice(notes.join(" "))
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not pull invoices")
     } finally {
@@ -319,7 +275,7 @@ export default function AnalysisPage() {
                 <label className={label}>date_macro</label>
                 <select className={selectCls} value={macro} onChange={e => { setMacro(e.target.value); setRows(null) }} data-testid="analysis-date_macro">
                   <option value="">— not set —</option>
-                  {DATE_MACROS.map(m => <option key={m} value={m}>{m}</option>)}
+                  {DATE_MACROS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </div>
             </div>
@@ -336,29 +292,54 @@ export default function AnalysisPage() {
           <div className="px-5 py-3 border-b text-sm font-semibold">Invoices ({rows.length} rows{usedRange ? `, ${usedRange}` : ""})</div>
           <div className="overflow-auto max-h-[500px]">
             <table className="text-xs w-full" data-testid="table-invoices">
-              <thead className="sticky top-0 bg-muted">
+              <thead className="sticky top-0">
                 <tr>
-                  {["Id", "DocNumber", "LinkedTxn Id", "LinkedTxn Type", "Customer Id", "Customer Name", "Total"].map(h => (
-                    <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
+                  <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
+                  <th colSpan={INVOICE_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>Invoice</th>
+                  {showPayments && <th colSpan={PAYMENT_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Payment</th>}
+                </tr>
+                <tr>
+                  {INVOICE_COLUMNS.map(h => (
+                    <th key={`invoice-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>{h}</th>
+                  ))}
+                  {showPayments && PAYMENT_COLUMNS.map(h => (
+                    <th key={`payment-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={7}>No invoices in this period.</td></tr>
+                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={INVOICE_COLUMNS.length + (showPayments ? PAYMENT_COLUMNS.length : 0) + 1}>No invoices in this period.</td></tr>
                 ) : rows.map((r, i) => (
                   <tr key={`${r.id}-${r.linkType}-${r.linkId}-${i}`} className="border-t">
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.id}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.docNumber}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.linkId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.linkType}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.customerId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">{r.customerName}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums">{r.total}</td>
+                    <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{i + 1}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.id}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.docNumber}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.txnDate}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.linkId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.linkType}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.customerId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.customerName}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{r.total}</td>
+                    {showPayments && (
+                      <>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.depositAccount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{r.paymentTotal}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentTxnDate}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentLinkId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentLinkType}</td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="px-5 py-3 border-t flex gap-8 text-sm" data-testid="duplicate-check">
+            <span>Invoices <span className="font-semibold tabular-nums">{invoiceCount ?? 0}</span></span>
+            <span>Rows <span className="font-semibold tabular-nums">{rows.length}</span></span>
+            <span>Difference <span className="font-semibold tabular-nums" style={{ color: rows.length - (invoiceCount ?? 0) === 0 ? "#FFFFFF" : "#FF0000", backgroundColor: rows.length - (invoiceCount ?? 0) === 0 ? "#111827" : "transparent", padding: "0 6px" }}>{rows.length - (invoiceCount ?? 0)}</span></span>
           </div>
         </Card>
       )}

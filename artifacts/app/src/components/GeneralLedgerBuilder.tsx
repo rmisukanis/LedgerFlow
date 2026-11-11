@@ -7,7 +7,32 @@ const label = "block text-xs font-semibold text-muted-foreground uppercase track
 const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
 
 // Parameters from https://developer.intuit.com/app/developer/qbo/docs/api/accounting/report-entities/generalledger
-export const DATE_MACROS = ["Today", "Yesterday", "This Week", "Last Week", "This Week-to-date", "Last Week-to-date", "Next Week", "Next 4 Weeks", "This Month", "Last Month", "This Month-to-date", "Last Month-to-date", "Next Month", "This Fiscal Quarter", "Last Fiscal Quarter", "This Fiscal Quarter-to-date", "Last Fiscal Quarter-to-date", "Next Fiscal Quarter", "This Fiscal Year", "Last Fiscal Year", "This Fiscal Year-to-date", "Last Fiscal Year-to-date", "Next Fiscal Year"]
+// value is the QuickBooks date_macro name. label is what the dropdown shows.
+export const DATE_MACROS: { value: string; label: string }[] = [
+  ["Today", "Today"],
+  ["Yesterday", "Yesterday"],
+  ["This Week", "This Week"],
+  ["Last Week", "Last Week"],
+  ["This Week-to-date", "This Week-to-date"],
+  ["Last Week-to-date", "Last Week-to-date"],
+  ["Next Week", "Next Week"],
+  ["Next 4 Weeks", "Next 4 Weeks"],
+  ["This Month", "This Month"],
+  ["Last Month", "Last Month"],
+  ["This Month-to-date", "This Month-to-date"],
+  ["Last Month-to-date", "Last Month-to-date"],
+  ["Next Month", "Next Month"],
+  ["This Fiscal Quarter", "This Quarter"],
+  ["Last Fiscal Quarter", "Last Quarter"],
+  ["This Fiscal Quarter-to-date", "This Quarter-to-date"],
+  ["Last Fiscal Quarter-to-date", "Last Quarter-to-date"],
+  ["Next Fiscal Quarter", "Next Quarter"],
+  ["This Fiscal Year", "This Year"],
+  ["Last Fiscal Year", "Last Year"],
+  ["This Fiscal Year-to-date", "This Year-to-date"],
+  ["Last Fiscal Year-to-date", "Last Year-to-date"],
+  ["Next Fiscal Year", "Next Year"],
+].map(([value, label]) => ({ value, label }))
 const ACCOUNT_TYPES = ["AccountsPayable", "AccountsReceivable", "Bank", "CostOfGoodsSold", "CreditCard", "Equity", "Expense", "FixedAsset", "Income", "LongTermLiability", "NonPosting", "OtherAsset", "OtherCurrentAsset", "OtherCurrentLiability", "OtherExpense", "OtherIncome"]
 const SUMMARIZE = ["Total", "Month", "Week", "Days", "Quarter", "Year", "Customers", "Vendors", "Classes", "Departments", "Employees", "ProductsAndServices"]
 const COLUMNS = ["account_name", "chk_print_state", "create_by", "create_date", "cust_name", "doc_num", "emp_name", "inv_date", "is_adj", "is_ap_paid", "is_ar_paid", "is_cleared", "item_name", "last_mod_by", "last_mod_date", "memo", "name", "quantity", "rate", "split_acc", "tx_date", "txn_type", "vend_name", "subt_nat_amount", "rbal_nat_amount", "net_amount", "tax_amount", "tax_code", "account_num", "klass_name", "dept_name"]
@@ -167,7 +192,13 @@ export function GeneralLedgerBuilder({ onChange, onColumnOrder }: { onChange: (q
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="space-y-1.5"><label className={label}>start_date</label><DateField onIso={x => set("start_date", x)} testId="gl-start_date" /></div>
         <div className="space-y-1.5"><label className={label}>end_date</label><DateField onIso={x => set("end_date", x)} testId="gl-end_date" /></div>
-        {simpleSelect("date_macro", "date_macro", DATE_MACROS)}
+        <div className="space-y-1.5">
+          <label className={label}>date_macro</label>
+          <select className={selectCls} value={get("date_macro")} onChange={e => set("date_macro", e.target.value)} data-testid="gl-date_macro">
+            <option value="">— not set —</option>
+            {DATE_MACROS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </div>
         {simpleSelect("accounting_method", "accounting_method", ["Cash", "Accrual"])}
         {simpleSelect("account_type", "account_type", ACCOUNT_TYPES)}
         {simpleSelect("summarize_column_by", "summarize_column_by", SUMMARIZE)}

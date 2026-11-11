@@ -84,7 +84,8 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
-      '/api': `http://localhost:${apiPort}`,
+      // Only real API calls. "/api" would also catch the /api-explorer page.
+      '/api/': `http://localhost:${apiPort}`,
     },
     fs: {
       strict: true,

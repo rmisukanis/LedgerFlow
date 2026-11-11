@@ -370,7 +370,7 @@ export default function ReconcilePage() {
                 <label className={label}>date_macro</label>
                 <select className={selectCls} value={macro} onChange={e => { setMacro(e.target.value); setResult(null) }} data-testid="rec-date_macro">
                   <option value="">— not set —</option>
-                  {DATE_MACROS.map(m => <option key={m} value={m}>{m}</option>)}
+                  {DATE_MACROS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </div>
             </div>

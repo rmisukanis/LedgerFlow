@@ -49,6 +49,7 @@ export default function ApiExplorerPage() {
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [entityOpen, setEntityOpen] = useState(false)
   const [colOrder, setColOrder] = useState<string[]>([])
   const table = useMemo(() => reportToTable(result?.data, colOrder), [result, colOrder])
@@ -253,6 +254,10 @@ export default function ApiExplorerPage() {
           <div className="px-5 py-3 border-b flex items-center gap-3 text-sm">
             <Badge variant="outline" className={result.status < 300 ? "text-emerald-700" : "text-rose-700"}>{result.status}</Badge>
             <span className="text-muted-foreground">{result.ms} ms</span>
+            <Button size="sm" variant="outline" className="ml-auto" data-testid="button-copy-response" onClick={() => {
+              const text = typeof result.data === "string" ? result.data : JSON.stringify(result.data, null, 2)
+              navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => setError("Could not copy the response"))
+            }}>{copied ? "Copied" : "Copy"}</Button>
           </div>
           {table && (
             <div className="border-b">
