@@ -8,6 +8,7 @@ import { Layout } from '@/components/Layout';
 import ApiExplorer from '@/pages/apiExplorer';
 import BatchBuilder from '@/pages/batch';
 import Analysis from '@/pages/analysis';
+import Audit from '@/pages/audit';
 import Reconcile from '@/pages/reconcile';
 
 const queryClient = new QueryClient({
@@ -22,6 +23,7 @@ const queryClient = new QueryClient({
 const keptPages = [
   { id: "explorer", paths: ["/", "/crud", "/invoices", "/api-explorer"], Page: ApiExplorer },
   { id: "analysis", paths: ["/analysis"], Page: Analysis },
+  { id: "audit", paths: ["/audit"], Page: Audit },
 ]
 
 function Router() {

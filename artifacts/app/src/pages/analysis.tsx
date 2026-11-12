@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 import { depositIdsOf, isPayment, loadDepositCleared, loadDeposits, loadPayments, paymentIdsOf, reviewRows, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
 import { invoiceIdsOf, loadInvoices, paymentIdsOfDeposits, reviewDepositRows } from "@/lib/deposit-chain"
+import { defaultFixMemo, proposeDirectPaymentFixes, stepOne, STEP_ONE_DETAIL, STEP_ONE_NAME, type AnalysisStep, type ProposedFix } from "@/lib/analysis"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -103,7 +104,7 @@ const shift = (d: Date, days: number) => new Date(d.getFullYear(), d.getMonth(),
 const span = (start: Date, end: Date) => ({ start: iso(start), end: iso(end) })
 
 // The case names are the QuickBooks date_macro values (the option value), not the shorter dropdown label. The Invoice query has no date_macro parameter, so these become TxnDate bounds.
-function macroRange(name: string, today: Date, fiscalStartMonth: number) {
+export function macroRange(name: string, today: Date, fiscalStartMonth: number) {
   const day = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   const weekStart = shift(day, -day.getDay())
   const prevMonth = new Date(day.getFullYear(), day.getMonth() - 1, 1)
@@ -180,6 +181,10 @@ export default function AnalysisPage() {
   const [missingOnly, setMissingOnly] = useState(false)
   const [chain, setChain] = useState<"invoice" | "deposit">("invoice")
   const [invoiceCount, setInvoiceCount] = useState<number | null>(null)
+  const [analysisStep, setAnalysisStep] = useState<AnalysisStep | null>(null)
+  const [fixMemo, setFixMemo] = useState(defaultFixMemo)
+  const [proposals, setProposals] = useState<ProposedFix[] | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     qbQuery("SELECT Id, DisplayName FROM Customer MAXRESULTS 1000")
@@ -219,11 +224,83 @@ export default function AnalysisPage() {
   const groups: ChainGroup[] = chain === "deposit" ? ["deposit", "payment", "invoice"] : ["invoice", "payment", "deposit"]
   const visibleGroups = groups.filter(group => group === "invoice" || (group === "payment" ? showPayments : showDeposits))
   const shownRows = useMemo(() => {
-    if (!rows || !missingOnly) return rows
+    if (!rows) return rows
+    if (analysisStep === 1) return stepOne(rows)
+    if (!missingOnly) return rows
     const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
     if (chain === "deposit") return open.filter(row => !row.paymentId || !row.id)
     return open.filter(row => row.paymentId && !row.depositId)
-  }, [rows, missingOnly, chain])
+  }, [rows, missingOnly, chain, analysisStep])
+
+  const analyze = () => {
+    if (!rows || chain !== "invoice") {
+      setError("Pull invoices before analyzing transactions.")
+      return
+    }
+    setError(null)
+    setProposals(null)
+    setAnalysisStep(1)
+  }
+
+  const propose = async () => {
+    if (!rows || chain !== "invoice") {
+      setError("Pull invoices before proposing a fix.")
+      return
+    }
+    const flagged = stepOne(rows)
+    if (flagged.length === 0) {
+      setError("No payments are coded directly to a bank account.")
+      setProposals(null)
+      return
+    }
+    setError(null)
+    const names = new Map<string, string>()
+    const accountIds = [...new Set(flagged.map(row => row.depositAccount))]
+    try {
+      const data = await qbQuery(`SELECT Id, Name FROM Account WHERE Id IN (${accountIds.map(id => `'${qbQuote(id)}'`).join(",")}) MAXRESULTS 1000`)
+      for (const account of qbList<{ Id?: string; Name?: string }>(data, "Account")) names.set(String(account.Id ?? ""), String(account.Name ?? ""))
+    } catch {
+      // The proposal can still show the account id when the name lookup fails.
+    }
+    setAnalysisStep(1)
+    setProposals(proposeDirectPaymentFixes(rows, names))
+  }
+
+  const submit = async () => {
+    if (!proposals || proposals.length === 0) {
+      setError("Propose the fix before submitting it.")
+      return
+    }
+    if (!fixMemo.trim()) {
+      setError("Enter a memo before submitting.")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}api/qb/audit/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memo: fixMemo.trim(),
+          fixes: proposals.map(fix => ({ paymentId: fix.paymentId, originalAccount: fix.originalAccount, accountName: fix.depositToAccountRefName })),
+        }),
+      })
+      const body = await response.json()
+      const saved = new Set<string>((body.saved ?? []).map((item: { paymentId: string }) => item.paymentId))
+      if (saved.size > 0) {
+        const deposits = new Map<string, string>((body.saved ?? []).map((item: { paymentId: string; depositId: string }) => [item.paymentId, item.depositId]))
+        setRows(current => current?.map(row => saved.has(row.paymentId) ? { ...row, depositAccount: "4", depositId: deposits.get(row.paymentId) ?? row.depositId } : row) ?? current)
+        setProposals(current => current?.filter(fix => !saved.has(fix.paymentId)) ?? null)
+        setNotice(`Saved ${saved.size} change${saved.size === 1 ? "" : "s"} to QuickBooks and the audit register.`)
+      }
+      if (!response.ok || body.error) throw new Error(body.error ?? "Could not submit the proposed changes")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not submit the proposed changes")
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const period = useMemo(() => {
     if (macro) return macroRange(macro, new Date(), fiscalStart) ?? monthBounds(year, month)
@@ -240,6 +317,8 @@ export default function AnalysisPage() {
     setChain("invoice")
     setInvoiceCount(null)
     setUsedRange("")
+    setAnalysisStep(null)
+    setProposals(null)
     try {
       if (kind === "payment") {
         setError("Payment results are not wired up yet.")
@@ -379,6 +458,31 @@ export default function AnalysisPage() {
             </div>
             <p className="text-xs text-muted-foreground">A date macro is sent as the TxnDate range. Otherwise the start and end dates are used. With neither of those, the month and year are used.</p>
           </div>
+
+          <div className="space-y-3 border-t border-gray-200 pt-4">
+            <label className={label}>Analysis</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" onClick={analyze} data-testid="button-analyze">Analyze Transactions</Button>
+              <div className="flex h-9 min-w-28 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step">{analysisStep === 1 ? STEP_ONE_NAME : ""}</div>
+              {analysisStep === 1 && <div className="flex h-9 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step-detail">{STEP_ONE_DETAIL}</div>}
+            </div>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-end gap-3">
+                <Button type="button" onClick={propose} data-testid="button-propose-fix" style={{ backgroundColor: "#16A34A", color: "#FFFFFF", borderColor: "#16A34A" }}>Propose fix</Button>
+                {analysisStep === 1 && (
+                  <>
+                    <div className="space-y-1.5 min-w-80 flex-1 max-w-xl">
+                      <label className={label} htmlFor="fix-memo">Memo</label>
+                      <Input id="fix-memo" value={fixMemo} onChange={e => setFixMemo(e.target.value)} data-testid="input-fix-memo" />
+                    </div>
+                    <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
+                      {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -387,7 +491,7 @@ export default function AnalysisPage() {
 
       {rows && (
         <Card>
-          <div className="px-5 py-3 border-b text-sm font-semibold">{chain === "deposit" ? "Deposits" : "Invoices"} ({shownRows?.length ?? 0} rows{usedRange ? `, ${usedRange}` : ""}{missingOnly ? ", missing three way match" : ""})</div>
+          <div className="px-5 py-3 border-b text-sm font-semibold">{chain === "deposit" ? "Deposits" : "Invoices"} ({shownRows?.length ?? 0} rows{usedRange ? `, ${usedRange}` : ""}{analysisStep === 1 ? `, ${STEP_ONE_DETAIL}` : missingOnly ? ", missing three way match" : ""})</div>
           <div className="overflow-auto max-h-[500px]">
             <table className="text-xs w-full" data-testid="table-invoices">
               <thead className="sticky top-0">
@@ -419,6 +523,44 @@ export default function AnalysisPage() {
             <span>{chain === "deposit" ? "Deposits" : "Invoices"} <span className="font-semibold tabular-nums">{invoiceCount ?? 0}</span></span>
             <span>Rows <span className="font-semibold tabular-nums">{rows.length}</span></span>
             <span>Difference <span className="font-semibold tabular-nums" style={{ color: rows.length - (invoiceCount ?? 0) === 0 ? "#FFFFFF" : "#FF0000", backgroundColor: rows.length - (invoiceCount ?? 0) === 0 ? "#111827" : "transparent", padding: "0 6px" }}>{rows.length - (invoiceCount ?? 0)}</span></span>
+          </div>
+        </Card>
+      )}
+      {proposals && (
+        <Card className="border-4 border-[#C5D0E0]">
+          <div className="overflow-auto" data-testid="proposed-fixes">
+            <table className="text-xs w-full">
+              <thead>
+                <tr>
+                  <th colSpan={5} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Proposed Payment Update</th>
+                  <th colSpan={8} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>Proposed Updated Deposit</th>
+                </tr>
+                <tr>
+                  {["Original DepositToAccountRef", "Proposed DepositToAccountRef", "TotalAmt", "Id", "TxnDate", "Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Line Amount", "LinkedTxn Id", "LinkedTxn Type"].map((heading, index) => (
+                    <th key={`${heading}-${index}`} className="text-left px-3 py-2 whitespace-nowrap" style={index < 5 ? paymentHead : depositHead}>{heading}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {proposals.map(fix => (
+                  <tr key={fix.paymentId} className="border-t">
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.proposedAccount}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.totalAmt}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.totalAmt}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRef}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRefName}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.lineAmount}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnType}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Card>
       )}

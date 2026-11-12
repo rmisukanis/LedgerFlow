@@ -5,6 +5,7 @@ import {
   Layers,
   Search,
   Scale,
+  ClipboardList,
   LogOut,
   Hexagon
 } from "lucide-react"
@@ -21,6 +22,7 @@ export function Layout({ children }: LayoutProps) {
     { name: "API Explorer", href: "/api-explorer", icon: Network },
     { name: "Batch Builder", href: "/batch", icon: Layers },
     { name: "Analysis", href: "/analysis", icon: Search },
+    { name: "Audit", href: "/audit", icon: ClipboardList },
     { name: "Reconcile", href: "/reconcile", icon: Scale },
   ]
 
