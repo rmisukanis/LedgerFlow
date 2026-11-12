@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
-import { isPayment, loadPayments, paymentIdsOf, reviewRows, type ReviewRow } from "@/lib/invoice-chain"
+import { depositIdsOf, isPayment, loadDepositCleared, loadDeposits, loadPayments, paymentIdsOf, reviewRows, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
+import { invoiceIdsOf, loadInvoices, paymentIdsOfDeposits, reviewDepositRows } from "@/lib/deposit-chain"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -23,10 +24,67 @@ interface Customer { id: string; name: string }
 
 const INVOICE_COLUMNS = ["Id", "DocNumber", "TxnDate", "LinkedTxn Id", "LinkedTxn Type", "Customer Id", "Customer Name", "Total"]
 const PAYMENT_COLUMNS = ["DepositToAccountRef", "TotalAmt", "Id", "TxnDate", "LinkedTxn Id", "LinkedTxn Type"]
+const DEPOSIT_COLUMNS = ["Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Line Amount", "LinkedTxn Id", "LinkedTxn Type", "Clr = is_cleared"]
 const invoiceHead = { backgroundColor: "#DBEAFE", color: "#2563EB", boxShadow: "inset 0 -2px 0 #2563EB" }
 const invoiceCell = { backgroundColor: "#DBEAFE" }
 const paymentHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "inset 0 -2px 0 #16A34A" }
 const paymentCell = { backgroundColor: "#DCFCE7" }
+const depositHead = { backgroundColor: "#F3E8FF", color: "#9333EA", boxShadow: "inset 0 -2px 0 #9333EA" }
+const depositCell = { backgroundColor: "#F3E8FF" }
+
+type ChainGroup = "invoice" | "payment" | "deposit"
+const GROUP_TITLES: Record<ChainGroup, string> = { invoice: "Invoice", payment: "Payment", deposit: "Deposit" }
+
+function groupColumns(group: ChainGroup) {
+  if (group === "invoice") return INVOICE_COLUMNS
+  if (group === "payment") return PAYMENT_COLUMNS
+  return DEPOSIT_COLUMNS
+}
+
+function groupHead(group: ChainGroup) {
+  if (group === "invoice") return invoiceHead
+  if (group === "payment") return paymentHead
+  return depositHead
+}
+
+function GroupCells({ group, row }: { group: ChainGroup; row: ReviewRow }) {
+  if (group === "invoice") return (
+    <>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.id}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.docNumber}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.txnDate}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.linkId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.linkType}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.customerId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{row.customerName}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{row.total}</td>
+    </>
+  )
+  if (group === "payment") return (
+    <>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.depositAccount}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{row.paymentTotal}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.paymentId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.paymentTxnDate}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.paymentLinkId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.paymentLinkType}</td>
+    </>
+  )
+  return (
+    <>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositTxnDate}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{row.depositTotal}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositToAccountRefValue}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositToAccountRefName}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{row.depositLineAmount}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositLineLinkedTxnId}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositLineLinkedTxnType}</td>
+      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositCleared}</td>
+    </>
+  )
+}
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
 function presetPeriod(now = new Date()) {
@@ -119,6 +177,8 @@ export default function AnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [rows, setRows] = useState<ReviewRow[] | null>(null)
+  const [missingOnly, setMissingOnly] = useState(false)
+  const [chain, setChain] = useState<"invoice" | "deposit">("invoice")
   const [invoiceCount, setInvoiceCount] = useState<number | null>(null)
 
   useEffect(() => {
@@ -154,7 +214,16 @@ export default function AnalysisPage() {
     return () => document.removeEventListener("mousedown", close)
   }, [customerOpen])
 
-  const showPayments = rows?.some(r => isPayment(r.linkType)) ?? false
+  const showPayments = chain === "deposit" || (rows?.some(r => isPayment(r.linkType)) ?? false)
+  const showDeposits = chain === "deposit" || (rows?.some(r => r.depositId) ?? false)
+  const groups: ChainGroup[] = chain === "deposit" ? ["deposit", "payment", "invoice"] : ["invoice", "payment", "deposit"]
+  const visibleGroups = groups.filter(group => group === "invoice" || (group === "payment" ? showPayments : showDeposits))
+  const shownRows = useMemo(() => {
+    if (!rows || !missingOnly) return rows
+    const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
+    if (chain === "deposit") return open.filter(row => !row.paymentId || !row.id)
+    return open.filter(row => row.paymentId && !row.depositId)
+  }, [rows, missingOnly, chain])
 
   const period = useMemo(() => {
     if (macro) return macroRange(macro, new Date(), fiscalStart) ?? monthBounds(year, month)
@@ -168,11 +237,12 @@ export default function AnalysisPage() {
     setError(null)
     setNotice(null)
     setRows(null)
+    setChain("invoice")
     setInvoiceCount(null)
     setUsedRange("")
     try {
-      if (kind !== "invoice") {
-        setError(`${kind === "payment" ? "Payment" : "Deposit"} results are not wired up yet.`)
+      if (kind === "payment") {
+        setError("Payment results are not wired up yet.")
         return
       }
       const where: string[] = []
@@ -180,13 +250,36 @@ export default function AnalysisPage() {
       if (period.end) where.push(`TxnDate <= '${qbQuote(period.end)}'`)
       if (where.length === 0) throw new Error("Choose a month, a start or end date, or a date macro.")
       setUsedRange([period.start, period.end].filter(Boolean).join(" to "))
+      if (kind === "deposit") {
+        const query = `SELECT * FROM Deposit WHERE ${where.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS 1000`
+        const list = qbList<Record<string, unknown>>(await qbQuery(query), "Deposit")
+        const deposits = await storeDocuments("Deposit", list)
+        const storedDeposits = [...deposits.values()]
+        const linkedPaymentIds = paymentIdsOfDeposits(storedDeposits)
+        const payments = await loadPayments(linkedPaymentIds)
+        const invoices = await loadInvoices(invoiceIdsOf(payments))
+        const cleared = await loadDepositCleared(storedDeposits)
+        setChain("deposit")
+        setInvoiceCount(list.length)
+        setRows(reviewDepositRows(storedDeposits, payments, invoices, customerId, cleared))
+        const notes = [
+          list.length === 1000 ? "QuickBooks returned 1000 deposits, so later ones are not in this list." : "",
+        ].filter(Boolean)
+        if (notes.length > 0) setNotice(notes.join(" "))
+        return
+      }
       if (customerId) where.push(`CustomerRef = '${qbQuote(customerId)}'`)
       const query = `SELECT * FROM Invoice WHERE ${where.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS 1000`
       const list = qbList<Record<string, unknown>>(await qbQuery(query), "Invoice")
-      const paymentIds = paymentIdsOf(list)
+      const invoices = await storeDocuments("Invoice", list)
+      const storedInvoices = [...invoices.values()]
+      const paymentIds = paymentIdsOf(storedInvoices)
       const payments = await loadPayments(paymentIds)
+      const deposits = await loadDeposits(depositIdsOf(payments))
+      const cleared = await loadDepositCleared(deposits.values())
+      setChain("invoice")
       setInvoiceCount(list.length)
-      setRows(reviewRows(list, payments))
+      setRows(reviewRows(storedInvoices, payments, deposits, cleared))
       const missing = paymentIds.filter(id => !payments.has(id))
       const notes = [
         list.length === 1000 ? "QuickBooks returned 1000 invoices, so later ones are not in this list." : "",
@@ -263,9 +356,14 @@ export default function AnalysisPage() {
               </div>
               <div className="space-y-1.5 md:col-span-2">
                 <label className={label}>&nbsp;</label>
-                <Button variant="outline" onClick={pull} disabled={!kind || busy} data-testid="button-pull">
-                  {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks Register
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={pull} disabled={!kind || busy} data-testid="button-pull">
+                    {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull QuickBooks Register
+                  </Button>
+                  <Button type="button" variant={missingOnly ? "default" : "outline"} disabled={!kind || kind === "payment"} aria-pressed={missingOnly} onClick={() => setMissingOnly(on => !on)} data-testid="button-missing-match">
+                    Missing three way match
+                  </Button>
+                </div>
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-start">
@@ -289,55 +387,36 @@ export default function AnalysisPage() {
 
       {rows && (
         <Card>
-          <div className="px-5 py-3 border-b text-sm font-semibold">Invoices ({rows.length} rows{usedRange ? `, ${usedRange}` : ""})</div>
+          <div className="px-5 py-3 border-b text-sm font-semibold">{chain === "deposit" ? "Deposits" : "Invoices"} ({shownRows?.length ?? 0} rows{usedRange ? `, ${usedRange}` : ""}{missingOnly ? ", missing three way match" : ""})</div>
           <div className="overflow-auto max-h-[500px]">
             <table className="text-xs w-full" data-testid="table-invoices">
               <thead className="sticky top-0">
                 <tr>
                   <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
-                  <th colSpan={INVOICE_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>Invoice</th>
-                  {showPayments && <th colSpan={PAYMENT_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Payment</th>}
+                  {visibleGroups.map(group => (
+                    <th key={group} colSpan={groupColumns(group).length} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{GROUP_TITLES[group]}</th>
+                  ))}
                 </tr>
                 <tr>
-                  {INVOICE_COLUMNS.map(h => (
-                    <th key={`invoice-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>{h}</th>
-                  ))}
-                  {showPayments && PAYMENT_COLUMNS.map(h => (
-                    <th key={`payment-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>{h}</th>
-                  ))}
+                  {visibleGroups.flatMap(group => groupColumns(group).map(h => (
+                    <th key={`${group}-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{h}</th>
+                  )))}
                 </tr>
               </thead>
               <tbody>
-                {rows.length === 0 ? (
-                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={INVOICE_COLUMNS.length + (showPayments ? PAYMENT_COLUMNS.length : 0) + 1}>No invoices in this period.</td></tr>
-                ) : rows.map((r, i) => (
-                  <tr key={`${r.id}-${r.linkType}-${r.linkId}-${i}`} className="border-t">
+                {shownRows?.length === 0 ? (
+                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={visibleGroups.reduce((count, group) => count + groupColumns(group).length, 1)}>{missingOnly ? "Every pulled row has its match." : `No ${chain === "deposit" ? "deposits" : "invoices"} in this period.`}</td></tr>
+                ) : shownRows?.map((r, i) => (
+                  <tr key={`${r.depositId}-${r.paymentId}-${r.id}-${r.linkId}-${i}`} className="border-t">
                     <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{i + 1}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.id}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.docNumber}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.linkId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.linkType}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.customerId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{r.customerName}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{r.total}</td>
-                    {showPayments && (
-                      <>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.depositAccount}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{r.paymentTotal}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentId}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentTxnDate}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentLinkId}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{r.paymentLinkType}</td>
-                      </>
-                    )}
+                    {visibleGroups.map(group => <GroupCells key={group} group={group} row={r} />)}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div className="px-5 py-3 border-t flex gap-8 text-sm" data-testid="duplicate-check">
-            <span>Invoices <span className="font-semibold tabular-nums">{invoiceCount ?? 0}</span></span>
+            <span>{chain === "deposit" ? "Deposits" : "Invoices"} <span className="font-semibold tabular-nums">{invoiceCount ?? 0}</span></span>
             <span>Rows <span className="font-semibold tabular-nums">{rows.length}</span></span>
             <span>Difference <span className="font-semibold tabular-nums" style={{ color: rows.length - (invoiceCount ?? 0) === 0 ? "#FFFFFF" : "#FF0000", backgroundColor: rows.length - (invoiceCount ?? 0) === 0 ? "#111827" : "transparent", padding: "0 6px" }}>{rows.length - (invoiceCount ?? 0)}</span></span>
           </div>
