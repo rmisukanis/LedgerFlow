@@ -163,10 +163,15 @@ const YEAR_OPTIONS = Array.from(new Set([PRESET.year, ...Array.from({ length: 8 
 export default function AnalysisPage() {
   const [kind, setKind] = useState<TxnKind | "">("")
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [customerId, setCustomerId] = useState("")
+  const [customerIds, setCustomerIds] = useState<string[]>([])
   const [customerOpen, setCustomerOpen] = useState(false)
   const [customerQuery, setCustomerQuery] = useState("")
+  const [accounts, setAccounts] = useState<{ id: string; name: string }[]>([])
+  const [accountIds, setAccountIds] = useState<string[]>([])
+  const [accountOpen, setAccountOpen] = useState(false)
+  const [accountQuery, setAccountQuery] = useState("")
   const customerBox = useRef<HTMLDivElement>(null)
+  const accountBox = useRef<HTMLDivElement>(null)
   const [month, setMonth] = useState(PRESET.month)
   const [year, setYear] = useState(PRESET.year)
   const [startDate, setStartDate] = useState("")
@@ -193,6 +198,12 @@ export default function AnalysisPage() {
         setCustomers(list.map(c => ({ id: String(c.Id), name: String(c.DisplayName ?? c.Id) })).sort((a, b) => a.name.localeCompare(b.name)))
       })
       .catch(e => setError(e instanceof Error ? e.message : "Could not load customers"))
+    qbQuery("SELECT Id, Name FROM Account MAXRESULTS 1000")
+      .then(d => {
+        const list = qbList<{ Id: string; Name?: string }>(d, "Account")
+        setAccounts(list.map(a => ({ id: String(a.Id), name: String(a.Name ?? a.Id) })).sort((a, b) => a.name.localeCompare(b.name)))
+      })
+      .catch(e => setError(e instanceof Error ? e.message : "Could not load accounts"))
     qbQuery("SELECT * FROM CompanyInfo")
       .then(d => {
         const info = qbList<{ FiscalYearStartMonth?: string }>(d, "CompanyInfo")[0]
@@ -202,22 +213,34 @@ export default function AnalysisPage() {
       .catch(() => {})
   }, [])
 
-  const customer = customers.find(c => c.id === customerId)
   const customerReady = kind === "invoice" || kind === "payment" || kind === "deposit"
   const shownCustomers = useMemo(() => {
     const needle = customerQuery.trim().toLowerCase()
     if (!needle) return customers
     return customers.filter(c => `${c.name} ${c.id}`.toLowerCase().includes(needle))
   }, [customers, customerQuery])
+  const shownAccounts = useMemo(() => {
+    const needle = accountQuery.trim().toLowerCase()
+    if (!needle) return accounts
+    return accounts.filter(account => `${account.name} ${account.id}`.toLowerCase().includes(needle))
+  }, [accounts, accountQuery])
+  const pickedLabel = (ids: string[], items: { id: string; name: string }[], all: string) => {
+    if (ids.length === 0) return all
+    const first = items.find(item => item.id === ids[0])
+    const name = first ? `${first.name} (${first.id})` : ids[0]
+    return ids.length === 1 ? name : `${name} +${ids.length - 1}`
+  }
 
   useEffect(() => {
-    if (!customerOpen) return
+    if (!customerOpen && !accountOpen) return
     const close = (event: MouseEvent) => {
-      if (!customerBox.current?.contains(event.target as Node)) setCustomerOpen(false)
+      const target = event.target as Node
+      if (!customerBox.current?.contains(target)) setCustomerOpen(false)
+      if (!accountBox.current?.contains(target)) setAccountOpen(false)
     }
     document.addEventListener("mousedown", close)
     return () => document.removeEventListener("mousedown", close)
-  }, [customerOpen])
+  }, [customerOpen, accountOpen])
 
   const showPayments = chain === "deposit" || (rows?.some(r => isPayment(r.linkType)) ?? false)
   const showDeposits = chain === "deposit" || (rows?.some(r => r.depositId) ?? false)
@@ -225,12 +248,18 @@ export default function AnalysisPage() {
   const visibleGroups = groups.filter(group => group === "invoice" || (group === "payment" ? showPayments : showDeposits))
   const shownRows = useMemo(() => {
     if (!rows) return rows
-    if (analysisStep === 1) return stepOne(rows)
-    if (!missingOnly) return rows
-    const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
-    if (chain === "deposit") return open.filter(row => !row.paymentId || !row.id)
-    return open.filter(row => row.paymentId && !row.depositId && row.paymentLinkType.replace(/\s/g, "").toLowerCase() !== "creditmemo")
-  }, [rows, missingOnly, chain, analysisStep])
+    let list: ReviewRow[]
+    if (analysisStep === 1) list = stepOne(rows)
+    else if (!missingOnly) list = rows
+    else {
+      const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
+      list = chain === "deposit"
+        ? open.filter(row => !row.paymentId || !row.id)
+        : open.filter(row => row.paymentId && !row.depositId && row.paymentLinkType.replace(/\s/g, "").toLowerCase() !== "creditmemo")
+    }
+    if (accountIds.length === 0) return list
+    return list.filter(row => accountIds.includes(row.depositAccount) || accountIds.includes(row.depositToAccountRefValue))
+  }, [rows, missingOnly, chain, analysisStep, accountIds])
 
   const analyze = () => {
     if (!rows || chain !== "invoice") {
@@ -340,14 +369,14 @@ export default function AnalysisPage() {
         const cleared = await loadDepositCleared(storedDeposits)
         setChain("deposit")
         setInvoiceCount(list.length)
-        setRows(reviewDepositRows(storedDeposits, payments, invoices, customerId, cleared))
+        setRows(reviewDepositRows(storedDeposits, payments, invoices, customerIds, cleared))
         const notes = [
           list.length === 1000 ? "QuickBooks returned 1000 deposits, so later ones are not in this list." : "",
         ].filter(Boolean)
         if (notes.length > 0) setNotice(notes.join(" "))
         return
       }
-      if (customerId) where.push(`CustomerRef = '${qbQuote(customerId)}'`)
+      if (customerIds.length > 0) where.push(`CustomerRef IN (${customerIds.map(id => `'${qbQuote(id)}'`).join(",")})`)
       const query = `SELECT * FROM Invoice WHERE ${where.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS 1000`
       const list = qbList<Record<string, unknown>>(await qbQuery(query), "Invoice")
       const invoices = await storeDocuments("Invoice", list)
@@ -381,7 +410,7 @@ export default function AnalysisPage() {
 
       <Card>
         <CardContent className="p-5 space-y-5">
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <label className={label}>Transaction</label>
               <select className={selectCls} value={kind} data-testid="select-txn-kind" onChange={e => { setKind(e.target.value as TxnKind | ""); setRows(null); setError(null) }}>
@@ -393,7 +422,7 @@ export default function AnalysisPage() {
               <label className={label}>Customer</label>
               <div className="relative" ref={customerBox}>
                 <Button type="button" variant="outline" disabled={!customerReady} className="w-full justify-between font-normal" data-testid="select-customer" onClick={() => { setCustomerOpen(open => !open); setCustomerQuery("") }}>
-                  <span className="truncate">{customer ? `${customer.name} (${customer.id})` : customerReady ? "All customers" : "Select a transaction type first"}</span>
+                  <span className="truncate">{customerReady ? pickedLabel(customerIds, customers, "All customers") : "Select a transaction type first"}</span>
                   <ChevronsUpDown className="w-4 h-4 opacity-50 shrink-0" />
                 </Button>
                 {customerOpen && (
@@ -402,13 +431,42 @@ export default function AnalysisPage() {
                     <div className="mt-2 max-h-64 overflow-auto">
                       {customers.length === 0 ? <p className="px-2 py-3 text-sm text-muted-foreground">Loading customers…</p> : (
                         <>
-                          <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => { setCustomerId(""); setCustomerOpen(false); setRows(null) }}>All customers</button>
+                          <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => { setCustomerIds([]); setRows(null) }}>All customers</button>
                           {shownCustomers.map(c => (
-                            <button type="button" key={c.id} className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => { setCustomerId(c.id); setCustomerOpen(false); setRows(null) }}>
-                              {c.name} <span className="text-muted-foreground">({c.id})</span>
+                            <button type="button" key={c.id} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => { setCustomerIds(current => current.includes(c.id) ? current.filter(id => id !== c.id) : [...current, c.id]); setRows(null) }}>
+                              <input type="checkbox" readOnly checked={customerIds.includes(c.id)} aria-label={c.name} />
+                              <span>{c.name} <span className="text-muted-foreground">({c.id})</span></span>
                             </button>
                           ))}
                           {shownCustomers.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No customer found.</p>}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className={label}>Account</label>
+              <div className="relative" ref={accountBox}>
+                <Button type="button" variant="outline" className="w-full justify-between font-normal" data-testid="select-account" onClick={() => { setAccountOpen(open => !open); setAccountQuery("") }}>
+                  <span className="truncate">{pickedLabel(accountIds, accounts, "All accounts")}</span>
+                  <ChevronsUpDown className="w-4 h-4 opacity-50 shrink-0" />
+                </Button>
+                {accountOpen && (
+                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-2 shadow-md">
+                    <Input autoFocus placeholder="Search accounts…" value={accountQuery} onChange={e => setAccountQuery(e.target.value)} data-testid="input-account-search" />
+                    <div className="mt-2 max-h-64 overflow-auto">
+                      {accounts.length === 0 ? <p className="px-2 py-3 text-sm text-muted-foreground">Loading accounts…</p> : (
+                        <>
+                          <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => setAccountIds([])}>All accounts</button>
+                          {shownAccounts.map(account => (
+                            <button type="button" key={account.id} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted" onClick={() => setAccountIds(current => current.includes(account.id) ? current.filter(id => id !== account.id) : [...current, account.id])}>
+                              <input type="checkbox" readOnly checked={accountIds.includes(account.id)} aria-label={account.name} />
+                              <span>{account.name} <span className="text-muted-foreground">({account.id})</span></span>
+                            </button>
+                          ))}
+                          {shownAccounts.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No account found.</p>}
                         </>
                       )}
                     </div>

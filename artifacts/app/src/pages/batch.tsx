@@ -109,6 +109,47 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
   return line
 }
 
+function textValue(value: unknown): string {
+  if (value == null || value === "") return ""
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE"
+  if (typeof value === "object") {
+    const item = value as { value?: unknown; Address?: unknown; FreeFormNumber?: unknown }
+    if (item.value != null) return String(item.value)
+    if (item.Address != null) return String(item.Address)
+    if (item.FreeFormNumber != null) return String(item.FreeFormNumber)
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
+function lineObjectToDraft(entity: string, line: Obj): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (line.Amount != null) out["Line.Amount"] = String(line.Amount)
+  if (line.Description != null) out["Line.Description"] = String(line.Description)
+  if (entity === "Payment") {
+    const link = (Array.isArray(line.LinkedTxn) ? line.LinkedTxn[0] : undefined) as { TxnId?: unknown; TxnType?: unknown } | undefined
+    if (link?.TxnId != null) out["Line.TxnId"] = String(link.TxnId)
+    if (link?.TxnType != null) out["Line.TxnType"] = String(link.TxnType)
+    return out
+  }
+  const detail = (line.DepositLineDetail ?? line.AccountBasedExpenseLineDetail ?? line.SalesItemLineDetail) as Obj | undefined
+  if (!detail) return out
+  const account = detail.AccountRef as { value?: unknown } | undefined
+  const item = detail.ItemRef as { value?: unknown } | undefined
+  const customer = detail.CustomerRef as { value?: unknown } | undefined
+  const party = detail.Entity as { value?: unknown } | undefined
+  const method = detail.PaymentMethodRef as { value?: unknown } | undefined
+  if (account?.value != null) out["Line.AccountRef"] = String(account.value)
+  if (item?.value != null) out["Line.ItemRef"] = String(item.value)
+  if (customer?.value != null) out["Line.CustomerRef"] = String(customer.value)
+  if (party?.value != null) out["Line.EntityRef"] = String(party.value)
+  if (method?.value != null) out["Line.PaymentMethodRef"] = String(method.value)
+  if (detail.CheckNum != null) out["Line.CheckNum"] = String(detail.CheckNum)
+  if (detail.Qty != null) out["Line.Qty"] = String(detail.Qty)
+  if (detail.UnitPrice != null) out["Line.UnitPrice"] = String(detail.UnitPrice)
+  return out
+}
+
 function describe(entity: string, o: Obj | undefined, bId: unknown): string {
   if (!o) return `Record ${bId}: created`
   const ref = (o.VendorRef ?? o.CustomerRef ?? o.EntityRef ?? o.DepositToAccountRef) as { name?: string } | undefined
@@ -125,6 +166,8 @@ export default function BatchBuilderPage() {
   const [records, setRecords] = useState<Obj[]>([])
   const [problems, setProblems] = useState<string[]>([])
   const [results, setResults] = useState<string[] | null>(null)
+  const [editingBid, setEditingBid] = useState<number | null>(null)
+  const [checkedBids, setCheckedBids] = useState<number[]>([])
   const [sending, setSending] = useState(false)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [lines, setLines] = useState<Record<string, string>[]>([])
@@ -190,11 +233,11 @@ export default function BatchBuilderPage() {
   }
   const clearAdded = () => setAdded(a => ({ ...a, [entity]: [] }))
 
-  const reset = () => { setRecords([]); setProblems([]); setResults(null) }
+  const reset = () => { setRecords([]); setProblems([]); setResults(null); setEditingBid(null); setCheckedBids([]) }
   const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); setDraft({}); setLines([]); reset() }
   const toggle = (n: string) => {
     setPicked(p => { const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s })
-    reset()
+    if (editingBid == null) reset()
   }
 
   const addedRowObjects = () => {
@@ -283,6 +326,84 @@ export default function BatchBuilderPage() {
     setRecords(recs)
     setProblems(errs)
   }
+
+  const assemble = (header: Record<string, string>, lineRows: Record<string, string>[]) => {
+    const errs: string[] = []
+    const rec: Obj = {}
+    for (const field of schema.fields) {
+      const value = (header[field.name] ?? "").trim()
+      if (!value) {
+        if (field.required) errs.push(`${field.name} is required`)
+        continue
+      }
+      try { rec[field.name] = convert(field, value) } catch { errs.push(`${field.name} is not valid`) }
+    }
+    for (const row of lineRows) {
+      for (const field of schema.lineFields ?? []) {
+        if (field.required && !(row[field.name] ?? "").trim()) errs.push(`${field.name} is required`)
+      }
+      try {
+        const line = buildLine(entity, row)
+        if (line) ((rec.Line as Obj[]) ??= []).push(line)
+      } catch (e) { errs.push(e instanceof Error ? e.message : "invalid line") }
+    }
+    return { rec, errs }
+  }
+
+  const loadBid = (index: number) => {
+    const record = records[index]
+    const stored = added[entity]?.[index]
+    if (!record && !stored) return
+    const header: Record<string, string> = stored ? { ...stored.header } : {}
+    if (!stored && record) {
+      for (const field of schema.fields) {
+        const text = textValue(record[field.name])
+        if (text) header[field.name] = text
+      }
+    }
+    const parsed = stored
+      ? stored.lines.map(line => ({ ...line }))
+      : (Array.isArray(record?.Line) ? record.Line : []).map(line => lineObjectToDraft(entity, line as Obj))
+    const savedLines = parsed.slice(0, -1)
+    const openLine = parsed[parsed.length - 1] ?? {}
+    setPicked(current => {
+      const next = new Set(current)
+      for (const field of all) {
+        if (header[field.name] || parsed.some(line => line[field.name])) next.add(field.name)
+      }
+      return next
+    })
+    setDraft({ ...header, ...openLine })
+    setLines(savedLines)
+    setEditingBid(index)
+    setCheckedBids(current => current.includes(index) ? current : [...current, index])
+  }
+
+  const updateBid = () => {
+    if (editingBid == null) return
+    const { header, line, hasLine } = split()
+    const lineRows = hasLine ? [...lines, line] : lines
+    const { rec, errs } = assemble(header, lineRows)
+    setRecords(current => current.map((item, index) => index === editingBid ? rec : item))
+    setAdded(current => {
+      const list = current[entity]
+      if (!list?.[editingBid]) return current
+      const next = list.slice()
+      next[editingBid] = { header: { ...header }, lines: lineRows.map(row => ({ ...row })) }
+      return { ...current, [entity]: next }
+    })
+    setProblems(current => [
+      ...current.filter(problem => !problem.startsWith(`Row ${editingBid + 2}:`) && !problem.startsWith(`bId ${editingBid + 1}:`)),
+      ...errs.map(err => `bId ${editingBid + 1}: ${err}`),
+    ])
+    setEditingBid(null)
+    setDraft({})
+    setLines([])
+  }
+
+  const allBidsChecked = records.length > 0 && records.every((_, index) => checkedBids.includes(index))
+  const toggleBid = (index: number) => setCheckedBids(current => current.includes(index) ? current.filter(item => item !== index) : [...current, index])
+  const toggleAllBids = () => setCheckedBids(allBidsChecked ? [] : records.map((_, index) => index))
 
   const send = async () => {
     setSending(true)
@@ -419,6 +540,9 @@ export default function BatchBuilderPage() {
             })()}
             <div className="flex flex-wrap items-center gap-3">
               <Button onClick={() => addRecord(1)} data-testid="button-add-record"><Plus className="w-4 h-4 mr-2" />Add {entity} to batch</Button>
+              {editingBid != null && (
+                <Button type="button" onClick={updateBid} data-testid="button-update-bid">Update bid {editingBid + 1}</Button>
+              )}
               <div className="flex items-center gap-2 rounded-md bg-primary pl-3 pr-1 h-10 text-primary-foreground text-sm">
                 <Plus className="w-4 h-4" />Add
                 <input type="number" min={2} max={500} value={copies}
@@ -455,6 +579,31 @@ export default function BatchBuilderPage() {
 
       {records.length > 0 && (
         <Card>
+          <div className="px-5 py-3 border-b space-y-2" data-testid="bid-list">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input type="checkbox" checked={allBidsChecked} onChange={toggleAllBids} aria-label="Select all bids" data-testid="checkbox-select-all-bids" />
+                Bids
+              </label>
+              {editingBid != null && (
+                <Button type="button" onClick={updateBid} data-testid="button-update-bid-list">Update bid {editingBid + 1}</Button>
+              )}
+            </div>
+            {records.map((_, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-3 text-sm">
+                <input type="checkbox" checked={checkedBids.includes(index)} onChange={() => { const turningOn = !checkedBids.includes(index); toggleBid(index); if (turningOn) loadBid(index) }} aria-label={`Select bId ${index + 1}`} data-testid={`checkbox-bid-${index + 1}`} />
+                <span className="font-mono min-w-16">bId {index + 1}</span>
+                <span>{entity}</span>
+                {records[index].TotalAmt != null && records[index].TotalAmt !== "" && (
+                  <span className="tabular-nums">{Number(records[index].TotalAmt).toLocaleString("en-US", { style: "currency", currency: "USD" })}</span>
+                )}
+                <Button type="button" variant="outline" size="sm" onClick={() => loadBid(index)} data-testid={`button-edit-bid-${index + 1}`}>Edit</Button>
+                {editingBid === index && (
+                  <Button type="button" size="sm" onClick={updateBid} data-testid={`button-update-bid-row-${index + 1}`}>Update bid</Button>
+                )}
+              </div>
+            ))}
+          </div>
           <div className="px-5 py-3 border-b flex items-center justify-between">
             <span className="text-sm font-semibold">Batch JSON preview — {records.length} {entity} record{records.length === 1 ? "" : "s"} (sent 30 per request)</span>
             <Button onClick={send} disabled={sending || problems.length > 0} data-testid="button-send-batch">

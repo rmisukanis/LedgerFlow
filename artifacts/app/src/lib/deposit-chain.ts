@@ -97,7 +97,7 @@ function paymentFields(payment: Record<string, unknown> | undefined): Pick<Revie
   }
 }
 
-export function reviewDepositRows(deposits: Record<string, unknown>[], payments: Map<string, Record<string, unknown>>, invoices: Map<string, Record<string, unknown>>, customerId = "", cleared: Map<string, string> = new Map()): ReviewRow[] {
+export function reviewDepositRows(deposits: Record<string, unknown>[], payments: Map<string, Record<string, unknown>>, invoices: Map<string, Record<string, unknown>>, customerIds: readonly string[] = [], cleared: Map<string, string> = new Map()): ReviewRow[] {
   const rows: ReviewRow[] = []
   for (const deposit of deposits) {
     const account = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined
@@ -119,7 +119,8 @@ export function reviewDepositRows(deposits: Record<string, unknown>[], payments:
       for (const invoiceLink of linked) {
         const invoice = invoiceLink.id ? invoices.get(invoiceLink.id) : undefined
         const invoiceBase = invoiceFields(invoice, line.id)
-        if (customerId && invoiceBase.customerId !== customerId && String((payment?.CustomerRef as { value?: string } | undefined)?.value ?? "") !== customerId) continue
+        const paymentCustomer = String((payment?.CustomerRef as { value?: string } | undefined)?.value ?? "")
+        if (customerIds.length > 0 && !customerIds.includes(invoiceBase.customerId) && !customerIds.includes(paymentCustomer)) continue
         rows.push({
           ...invoiceBase,
           ...paymentBase,
