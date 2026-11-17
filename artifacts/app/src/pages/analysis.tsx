@@ -7,8 +7,9 @@ import { Input } from "@/components/ui/input"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 import { depositIdsOf, isPayment, loadDepositCleared, loadDeposits, loadPayments, paymentIdsOf, reviewRows, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
 import { invoiceIdsOf, loadInvoices, paymentIdsOfDeposits, reviewDepositRows } from "@/lib/deposit-chain"
-import { defaultFixMemo, proposeDirectPaymentFixes, stepOne, STEP_ONE_DETAIL, STEP_ONE_NAME, type AnalysisStep, type ProposedFix } from "@/lib/analysis"
+import { defaultFixMemo, depositSuggestions, matchUndepositedFunds, proposeDirectPaymentFixes, proposeUndepositedMatches, stepOne, stepTwoMemo, stepTwoRows, STEP_ONE_DETAIL, STEP_ONE_NAME, STEP_TWO_DETAIL, STEP_TWO_NAME, undepositedPayments, unlinkedDeposits, type AnalysisStep, type ProposedFix, type UnlinkedDeposit } from "@/lib/analysis"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
+import { formatCurrency } from "@/lib/utils"
 
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
@@ -32,6 +33,8 @@ const paymentHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "
 const paymentCell = { backgroundColor: "#DCFCE7" }
 const depositHead = { backgroundColor: "#F3E8FF", color: "#9333EA", boxShadow: "inset 0 -2px 0 #9333EA" }
 const depositCell = { backgroundColor: "#F3E8FF" }
+const matchHead = { backgroundColor: "#FEF2F2", color: "#DC2626", boxShadow: "inset 0 -2px 0 #DC2626" }
+const matchCell = { backgroundColor: "#FEF2F2", color: "#DC2626" }
 
 type ChainGroup = "invoice" | "payment" | "deposit"
 const GROUP_TITLES: Record<ChainGroup, string> = { invoice: "Invoice", payment: "Payment", deposit: "Deposit" }
@@ -187,6 +190,8 @@ export default function AnalysisPage() {
   const [chain, setChain] = useState<"invoice" | "deposit">("invoice")
   const [invoiceCount, setInvoiceCount] = useState<number | null>(null)
   const [analysisStep, setAnalysisStep] = useState<AnalysisStep | null>(null)
+  const [openDeposits, setOpenDeposits] = useState<UnlinkedDeposit[] | null>(null)
+  const [stepTwoBusy, setStepTwoBusy] = useState(false)
   const [fixMemo, setFixMemo] = useState(defaultFixMemo)
   const [proposals, setProposals] = useState<ProposedFix[] | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -243,13 +248,14 @@ export default function AnalysisPage() {
   }, [customerOpen, accountOpen])
 
   const showPayments = chain === "deposit" || (rows?.some(r => isPayment(r.linkType)) ?? false)
-  const showDeposits = chain === "deposit" || (rows?.some(r => r.depositId) ?? false)
+  const showDeposits = chain === "deposit" || analysisStep === 2 || (rows?.some(r => r.depositId) ?? false)
   const groups: ChainGroup[] = chain === "deposit" ? ["deposit", "payment", "invoice"] : ["invoice", "payment", "deposit"]
   const visibleGroups = groups.filter(group => group === "invoice" || (group === "payment" ? showPayments : showDeposits))
   const shownRows = useMemo(() => {
     if (!rows) return rows
     let list: ReviewRow[]
     if (analysisStep === 1) list = stepOne(rows)
+    else if (analysisStep === 2) list = openDeposits ? stepTwoRows(rows, matchUndepositedFunds(undepositedPayments(rows), openDeposits)) : []
     else if (!missingOnly) list = rows
     else {
       const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
@@ -259,21 +265,69 @@ export default function AnalysisPage() {
     }
     if (accountIds.length === 0) return list
     return list.filter(row => accountIds.includes(row.depositAccount) || accountIds.includes(row.depositToAccountRefValue))
-  }, [rows, missingOnly, chain, analysisStep, accountIds])
+  }, [rows, missingOnly, chain, analysisStep, accountIds, openDeposits])
+  const suggestions = useMemo(() => {
+    if (analysisStep !== 2 || !rows || !openDeposits) return []
+    const found = depositSuggestions(undepositedPayments(rows), openDeposits)
+    if (accountIds.length === 0) return found
+    return found.filter(item => accountIds.includes(item.deposit.accountId) || (item.payment != null && accountIds.includes(item.payment.depositAccount)))
+  }, [analysisStep, rows, openDeposits, accountIds])
+  const invoiceGroups: ChainGroup[] = ["invoice", "payment"]
+
+  const loadOpenDeposits = async () => {
+    if (!period.start && !period.end) return
+    setStepTwoBusy(true)
+    setError(null)
+    try {
+      const where: string[] = []
+      if (period.start) where.push(`TxnDate >= '${qbQuote(period.start)}'`)
+      if (period.end) where.push(`TxnDate <= '${qbQuote(period.end)}'`)
+      const data = await qbQuery(`SELECT * FROM Deposit WHERE ${where.join(" AND ")} MAXRESULTS 1000`)
+      const list = qbList<Record<string, unknown>>(data, "Deposit")
+      setOpenDeposits(unlinkedDeposits(list))
+      if (list.length === 1000) setNotice("QuickBooks returned 1000 deposits, so later ones are not compared.")
+    } catch (e) {
+      setOpenDeposits([])
+      setError(e instanceof Error ? e.message : "Could not load deposits")
+    } finally {
+      setStepTwoBusy(false)
+    }
+  }
+
+  const chooseStep = (step: AnalysisStep) => {
+    setError(null)
+    setProposals(null)
+    setAnalysisStep(step)
+    setFixMemo(step === 2 ? stepTwoMemo() : defaultFixMemo())
+    if (step === 2 && openDeposits == null) void loadOpenDeposits()
+  }
 
   const analyze = () => {
     if (!rows || chain !== "invoice") {
       setError("Pull invoices before analyzing transactions.")
       return
     }
-    setError(null)
-    setProposals(null)
-    setAnalysisStep(1)
+    chooseStep(1)
   }
 
   const propose = async () => {
     if (!rows || chain !== "invoice") {
       setError("Pull invoices before proposing a fix.")
+      return
+    }
+    if (analysisStep === 2) {
+      if (!openDeposits) {
+        setError("Wait for the deposit lookup to finish.")
+        return
+      }
+      const matches = matchUndepositedFunds(undepositedPayments(rows), openDeposits)
+      if (matches.size === 0) {
+        setError("No undeposited payment has one clear deposit match.")
+        setProposals(null)
+        return
+      }
+      setError(null)
+      setProposals(proposeUndepositedMatches(rows, matches))
       return
     }
     const flagged = stepOne(rows)
@@ -347,6 +401,7 @@ export default function AnalysisPage() {
     setInvoiceCount(null)
     setUsedRange("")
     setAnalysisStep(null)
+    setOpenDeposits(null)
     setProposals(null)
     try {
       if (kind === "payment") {
@@ -521,21 +576,30 @@ export default function AnalysisPage() {
             <label className={label}>Analysis</label>
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" onClick={analyze} data-testid="button-analyze">Analyze Transactions</Button>
-              <div className="flex h-9 min-w-28 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step">{analysisStep === 1 ? STEP_ONE_NAME : ""}</div>
-              {analysisStep === 1 && <div className="flex h-9 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step-detail">{STEP_ONE_DETAIL}</div>}
+              {analysisStep == null ? (
+                <div className="flex h-9 min-w-28 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step" />
+              ) : (
+                <select className="h-9 min-w-28 rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" value={analysisStep} onChange={e => chooseStep(Number(e.target.value) as AnalysisStep)} data-testid="analysis-step">
+                  <option value={1}>{STEP_ONE_NAME}</option>
+                  <option value={2}>{STEP_TWO_NAME}</option>
+                </select>
+              )}
+              {analysisStep != null && <div className="flex h-9 items-center rounded-md border border-gray-200 bg-gray-50 px-3 text-sm" data-testid="analysis-step-detail">{analysisStep === 2 ? STEP_TWO_DETAIL : STEP_ONE_DETAIL}{stepTwoBusy ? " — looking up deposits" : ""}</div>}
             </div>
             <div className="space-y-3">
               <div className="flex flex-wrap items-end gap-3">
                 <Button type="button" onClick={propose} data-testid="button-propose-fix" style={{ backgroundColor: "#16A34A", color: "#FFFFFF", borderColor: "#16A34A" }}>Propose fix</Button>
-                {analysisStep === 1 && (
+                {analysisStep != null && (
                   <>
                     <div className="space-y-1.5 min-w-80 flex-1 max-w-xl">
                       <label className={label} htmlFor="fix-memo">Memo</label>
                       <Input id="fix-memo" value={fixMemo} onChange={e => setFixMemo(e.target.value)} data-testid="input-fix-memo" />
                     </div>
-                    <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
-                      {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
-                    </Button>
+                    {analysisStep === 1 && (
+                      <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
+                        {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
+                      </Button>
+                    )}
                   </>
                 )}
               </div>
@@ -547,7 +611,88 @@ export default function AnalysisPage() {
       {error && <p className="text-sm text-rose-600">{error}</p>}
       {notice && <p className="text-sm text-muted-foreground">{notice}</p>}
 
-      {rows && (
+      {rows && analysisStep === 2 && (
+        <div className="space-y-6">
+          <Card>
+            <div className="px-5 py-3 border-b text-sm font-semibold">Invoices ({shownRows?.length ?? 0} rows{usedRange ? `, ${usedRange}` : ""}, {STEP_TWO_DETAIL})</div>
+            <div className="overflow-auto max-h-[500px]">
+              <table className="text-xs w-full" data-testid="table-invoices">
+                <thead className="sticky top-0">
+                  <tr>
+                    <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
+                    {invoiceGroups.map(group => (
+                      <th key={group} colSpan={groupColumns(group).length} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{GROUP_TITLES[group]}</th>
+                    ))}
+                  </tr>
+                  <tr>
+                    {invoiceGroups.flatMap(group => groupColumns(group).map(h => (
+                      <th key={`${group}-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{h}</th>
+                    )))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(shownRows?.length ?? 0) === 0 ? (
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={invoiceGroups.reduce((count, group) => count + groupColumns(group).length, 1)}>No payments in Undeposited Funds are missing a deposit.</td></tr>
+                  ) : shownRows?.map((r, i) => (
+                    <tr key={`${r.paymentId}-${r.id}-${r.linkId}-${i}`} className="border-t">
+                      <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{i + 1}</td>
+                      {invoiceGroups.map(group => <GroupCells key={group} group={group} row={r} />)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+          <Card>
+            <div className="px-5 py-3 border-b text-sm font-semibold">Deposits without a payment ({stepTwoBusy || openDeposits == null ? "…" : suggestions.length})</div>
+            <div className="overflow-auto max-h-[500px]">
+              <table className="text-xs w-full" data-testid="table-unlinked-deposits">
+                <thead className="sticky top-0">
+                  <tr>
+                    <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
+                    <th colSpan={7} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>Deposit</th>
+                    <th colSpan={6} className="text-left px-3 py-2 whitespace-nowrap" style={matchHead}>Potential payment match</th>
+                  </tr>
+                  <tr>
+                    {["Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Lines", "Customer"].map(heading => (
+                      <th key={heading} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>{heading}</th>
+                    ))}
+                    {["DepositToAccountRef", "TotalAmt", "Id", "TxnDate", "Why", "Likelihood"].map(heading => (
+                      <th key={heading} className="text-left px-3 py-2 whitespace-nowrap" style={{ ...matchHead, width: heading === "DepositToAccountRef" || heading === "Why" ? "22ch" : undefined }}>{heading}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stepTwoBusy || openDeposits == null ? (
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={14}>Looking up deposits…</td></tr>
+                  ) : suggestions.length === 0 ? (
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={14}>No deposits in this period are missing a payment.</td></tr>
+                  ) : suggestions.map((item, index) => (
+                    <tr key={item.deposit.id} className="border-t" data-testid={`unlinked-deposit-${item.deposit.id}`}>
+                      <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{index + 1}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.id}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.txnDate}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{formatCurrency(item.deposit.total)}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.accountId}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.accountName}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.lineAmounts.map(amount => formatCurrency(amount)).join(", ")}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.customerNames.join(", ")}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...matchCell, width: "22ch", minWidth: "22ch" }}>{item.payment?.depositAccount ?? ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={matchCell}>{item.payment ? formatCurrency(item.payment.total) : ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={matchCell}>{item.payment?.paymentId ?? ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={matchCell}>{item.payment?.txnDate ?? ""}</td>
+                      <td className="px-3 py-1.5 whitespace-normal" style={{ ...matchCell, width: "22ch", minWidth: "22ch" }}>{item.reason}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap tabular-nums" style={matchCell}>{item.likelihood == null ? "" : `${item.likelihood}%`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {rows && analysisStep !== 2 && (
         <Card>
           <div className="px-5 py-3 border-b text-sm font-semibold">{chain === "deposit" ? "Deposits" : "Invoices"} ({shownRows?.length ?? 0} rows{usedRange ? `, ${usedRange}` : ""}{analysisStep === 1 ? `, ${STEP_ONE_DETAIL}` : missingOnly ? ", missing three way match" : ""})</div>
           <div className="overflow-auto max-h-[500px]">
@@ -607,7 +752,7 @@ export default function AnalysisPage() {
                     <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.totalAmt}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}></td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.totalAmt}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRef}</td>
