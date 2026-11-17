@@ -93,6 +93,23 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
       { name: "Line.CheckNum", kind: "text" },
     ],
   },
+  Payment: {
+    fields: [
+      { name: "CustomerRef", kind: "ref", required: true, hint: "Customer Id" },
+      { name: "TotalAmt", kind: "number", required: true, hint: "Payment amount. Leave an amount above the lines unapplied" },
+      { name: "TxnDate", kind: "text", hint: "YYYY-MM-DD" },
+      { name: "DepositToAccountRef", kind: "ref", hint: "Bank account or Undeposited Funds. Blank uses the QuickBooks default" },
+      { name: "PaymentMethodRef", kind: "ref", hint: "Payment method Id" },
+      { name: "PaymentRefNum", kind: "text", hint: "Check or reference number" },
+      { name: "PrivateNote", kind: "text" },
+      { name: "CurrencyRef", kind: "ref", hint: "Currency code, e.g. USD (required if multicurrency is on)" },
+    ],
+    lineFields: [
+      { name: "Line.Amount", kind: "number", hint: "Amount of this payment applied to the transaction" },
+      { name: "Line.TxnId", kind: "text", hint: "Invoice or credit memo Id this line pays" },
+      { name: "Line.TxnType", kind: "text", hint: "Invoice or CreditMemo. Blank means Invoice" },
+    ],
+  },
   Invoice: {
     fields: [
       { name: "CustomerRef", kind: "ref", required: true, hint: "Customer Id" },

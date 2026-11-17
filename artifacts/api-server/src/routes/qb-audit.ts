@@ -39,18 +39,42 @@ function isMissing(err: unknown) {
   return text.includes("610") || /not found/i.test(text);
 }
 
+function sameRecord(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((item, index) => sameRecord(item, right[index]));
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const key of keys) {
+      if (!sameRecord(a[key], b[key])) return false;
+    }
+    return true;
+  }
+  return left === right;
+}
+
 async function saveDocument(realmId: string, entity: string, record: Record<string, unknown>) {
   const qbId = String(record.Id ?? "");
-  const lastUpdatedTime = updatedTime(record);
-  const existing = await db.select({ id: qbDocumentsTable.id }).from(qbDocumentsTable).where(and(
+  const qbTime = updatedTime(record);
+  const existing = await db.select({
+    payload: qbDocumentsTable.payload,
+    lastUpdatedTime: qbDocumentsTable.lastUpdatedTime,
+  }).from(qbDocumentsTable).where(and(
     eq(qbDocumentsTable.realmId, realmId),
     eq(qbDocumentsTable.entity, entity),
     eq(qbDocumentsTable.qbId, qbId),
   ));
-  if (existing.length === 0) {
-    await db.insert(qbDocumentsTable).values({ realmId, entity, qbId, lastUpdatedTime, payload: record });
+  const previous = existing[0];
+  if (!previous) {
+    await db.insert(qbDocumentsTable).values({ realmId, entity, qbId, lastUpdatedTime: qbTime, payload: record });
     return;
   }
+  const contentChanged = !sameRecord(previous.payload, record);
+  const qbTimeMoved = updatedTime(previous.payload) !== qbTime;
+  const lastUpdatedTime = contentChanged && !qbTimeMoved ? new Date().toISOString() : (contentChanged ? qbTime : previous.lastUpdatedTime);
   await db.update(qbDocumentsTable).set({ lastUpdatedTime, payload: record, storedAt: new Date() }).where(and(
     eq(qbDocumentsTable.realmId, realmId),
     eq(qbDocumentsTable.entity, entity),
@@ -146,6 +170,9 @@ router.post("/qb/audit/submit", async (req, res): Promise<void> => {
       });
       const deposit = (depositResponse.Deposit ?? depositResponse) as Record<string, unknown>;
       await saveDocument(token.realmId, "Deposit", deposit);
+      const refreshedBody = await qbRequest(`/payment/${paymentId}`, "GET");
+      const refreshedPayment = (refreshedBody.Payment ?? refreshedBody) as Record<string, unknown>;
+      if (refreshedPayment.Id) await saveDocument(token.realmId, "Payment", refreshedPayment);
       const depositAccount = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
       await db.insert(qbAuditTable).values({
         realmId: token.realmId,

@@ -31,8 +31,12 @@ interface AuditRow {
 
 const originalHead = { backgroundColor: "#DBEAFE", color: "#2563EB", boxShadow: "inset 0 -2px 0 #2563EB" }
 const originalCell = { backgroundColor: "#DBEAFE" }
-const updateHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "inset 0 -2px 0 #16A34A" }
-const updateCell = { backgroundColor: "#DCFCE7" }
+const updateHead = { backgroundColor: "#FEF9C3", color: "#A16207", boxShadow: "inset 0 -2px 0 #CA8A04" }
+const paymentHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "inset 0 -2px 0 #16A34A" }
+const paymentCell = { backgroundColor: "#DCFCE7" }
+const depositHead = { backgroundColor: "#F3E8FF", color: "#9333EA", boxShadow: "inset 0 -2px 0 #9333EA" }
+const depositCell = { backgroundColor: "#F3E8FF" }
+const depositBreak = { borderLeft: "3px solid #E9D5FF" }
 
 function when(value: string) {
   const date = new Date(value)
@@ -171,19 +175,24 @@ export default function AuditPage() {
             <table className="text-xs w-full" data-testid="table-audit">
               <thead className="sticky top-0">
                 <tr>
-                  <th rowSpan={2} className="text-left px-3 py-2 whitespace-nowrap bg-white">
+                  <th rowSpan={3} className="text-left px-3 py-2 whitespace-nowrap bg-white">
                     <input type="checkbox" aria-label="Select all" checked={allSelected} onChange={toggleAll} disabled={!rows || rows.length === 0} data-testid="checkbox-select-all-audit" />
                   </th>
-                  <th rowSpan={2} className="text-left px-3 py-2 whitespace-nowrap bg-white">Changed at</th>
-                  <th colSpan={4} className="text-left px-3 py-2 whitespace-nowrap" style={originalHead}>Original payment</th>
+                  <th rowSpan={3} className="text-left px-3 py-2 whitespace-nowrap bg-white">Changed at</th>
+                  <th rowSpan={2} colSpan={4} className="text-left px-3 py-2 whitespace-nowrap" style={originalHead}>Original payment</th>
                   <th colSpan={10} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>Update</th>
+                </tr>
+                <tr>
+                  <th colSpan={1} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Payment</th>
+                  <th colSpan={9} className="text-left px-3 py-2 whitespace-nowrap" style={{ ...depositHead, ...depositBreak }}>Deposit</th>
                 </tr>
                 <tr>
                   {["DepositToAccountRef", "TotalAmt", "Id", "TxnDate"].map(heading => (
                     <th key={`original-${heading}`} className="text-left px-3 py-2 whitespace-nowrap" style={originalHead}>{heading}</th>
                   ))}
-                  {["DepositToAccountRef", "Deposit Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Line Amount", "LinkedTxn Id", "LinkedTxn Type", "Memo"].map(heading => (
-                    <th key={`update-${heading}`} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>{heading}</th>
+                  <th className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>DepositToAccountRef</th>
+                  {["Deposit Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Line Amount", "LinkedTxn Id", "LinkedTxn Type", "Memo"].map((heading, index) => (
+                    <th key={`deposit-${heading}`} className="text-left px-3 py-2 whitespace-nowrap" style={index === 0 ? { ...depositHead, ...depositBreak } : depositHead}>{heading}</th>
                   ))}
                 </tr>
               </thead>
@@ -200,16 +209,16 @@ export default function AuditPage() {
                     <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={originalCell}>{row.totalAmt}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={originalCell}>{row.paymentId}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={originalCell}>{row.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.updatedDepositAccount}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.depositId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={updateCell}>{row.totalAmt}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.depositToAccountRef}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.depositToAccountRefName}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={updateCell}>{row.lineAmount}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.linkedTxnId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.linkedTxnType}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.memo}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{row.updatedDepositAccount}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...depositBreak }}>{row.depositId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.txnDate}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{row.totalAmt}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositToAccountRef}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.depositToAccountRefName}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{row.lineAmount}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.linkedTxnId}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.linkedTxnType}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.memo}</td>
                   </tr>
                 ))}
               </tbody>

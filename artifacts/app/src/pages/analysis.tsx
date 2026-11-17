@@ -229,7 +229,7 @@ export default function AnalysisPage() {
     if (!missingOnly) return rows
     const open = rows.filter(row => row.depositCleared.trim().toUpperCase() !== "R")
     if (chain === "deposit") return open.filter(row => !row.paymentId || !row.id)
-    return open.filter(row => row.paymentId && !row.depositId)
+    return open.filter(row => row.paymentId && !row.depositId && row.paymentLinkType.replace(/\s/g, "").toLowerCase() !== "creditmemo")
   }, [rows, missingOnly, chain, analysisStep])
 
   const analyze = () => {

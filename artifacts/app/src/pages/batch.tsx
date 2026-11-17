@@ -33,7 +33,17 @@ const REF_SOURCES: Record<string, [string, string, string?]> = {
   TermRef: ["Term", "Name"],
   PaymentMethodRef: ["PaymentMethod", "Name"],
 }
-const STATIC_OPTIONS: Record<string, string[]> = { PaymentType: ["Cash", "Check", "CreditCard"] }
+
+function refSource(entity: string, field: string): [string, string, string?] | undefined {
+  if (entity === "Payment" && field === "DepositToAccountRef") return ["Account", "Name"]
+  return REF_SOURCES[field]
+}
+
+const optionKey = (entity: string, field: string) => `${entity}:${field}`
+const STATIC_OPTIONS: Record<string, string[]> = {
+  PaymentType: ["Cash", "Check", "CreditCard"],
+  "Line.TxnType": ["Invoice", "CreditMemo"],
+}
 interface Opt { id: string; name: string; type?: string }
 
 function convert(f: BatchField, raw: string): unknown {
@@ -60,12 +70,21 @@ function convert(f: BatchField, raw: string): unknown {
 
 function buildLine(entity: string, row: Record<string, string>): Obj | null {
   const get = (k: string) => (row[k] ?? "").toString().trim()
-  if (!get("Line.Amount")) return null
   const num = (k: string) => {
     const n = Number(get(k).replace(/[$,\s]/g, ""))
     if (Number.isNaN(n)) throw new Error(k + " is not a number")
     return n
   }
+  if (entity === "Payment") {
+    const txnId = get("Line.TxnId")
+    if (!get("Line.Amount") && !txnId) return null
+    if (!txnId) throw new Error("Line.TxnId is required when a payment line has an amount")
+    if (!get("Line.Amount")) throw new Error("Line.Amount is required when a payment line has a transaction id")
+    const rawType = get("Line.TxnType").replace(/\s/g, "")
+    const txnType = rawType.toLowerCase() === "creditmemo" ? "CreditMemo" : (rawType || "Invoice")
+    return { Amount: num("Line.Amount"), LinkedTxn: [{ TxnId: txnId, TxnType: txnType }] }
+  }
+  if (!get("Line.Amount")) return null
   const line: Obj = { Amount: num("Line.Amount") }
   if (get("Line.Description")) line.Description = get("Line.Description")
   if (entity === "Deposit") {
@@ -120,10 +139,12 @@ export default function BatchBuilderPage() {
 
   useEffect(() => {
     for (const f of selected) {
-      const src = REF_SOURCES[f.name]
-      if (!src || options[f.name]) continue
-      setOptions(o => ({ ...o, [f.name]: "loading" }))
-      const q = `SELECT Id, ${src[1]}${src[0] === "Account" ? ", AccountType" : ""} FROM ${src[0]}${src[2] ? " " + src[2] : ""} MAXRESULTS 1000`
+      const src = refSource(entity, f.name)
+      const key = optionKey(entity, f.name)
+      if (!src || options[key]) continue
+      setOptions(o => ({ ...o, [key]: "loading" }))
+      const accountColumns = src[0] === "Account" ? ", AccountType, AccountSubType" : ""
+      const q = `SELECT Id, ${src[1]}${accountColumns} FROM ${src[0]}${src[2] ? " " + src[2] : ""} MAXRESULTS 1000`
       fetch(API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -131,14 +152,17 @@ export default function BatchBuilderPage() {
       })
         .then(r => r.json())
         .then(j => {
-          const rows = (j.data?.QueryResponse?.[src[0]] as Obj[] | undefined) ?? []
+          const rows = ((j.data?.QueryResponse?.[src[0]] as Obj[] | undefined) ?? []).filter(r => {
+            if (entity !== "Payment" || f.name !== "DepositToAccountRef") return true
+            return r.AccountType === "Bank" || r.AccountSubType === "UndepositedFunds"
+          })
           if (j.status >= 300) throw new Error("query failed")
-          setOptions(o => ({ ...o, [f.name]: rows.map(r => ({ id: String(r.Id), name: String(r[src[1]] ?? ""), type: r.AccountType ? String(r.AccountType) : undefined })) }))
+          setOptions(o => ({ ...o, [key]: rows.map(r => ({ id: String(r.Id), name: String(r[src[1]] ?? ""), type: r.AccountType ? String(r.AccountType) : undefined })) }))
         })
-        .catch(() => setOptions(o => ({ ...o, [f.name]: "error" })))
+        .catch(() => setOptions(o => ({ ...o, [key]: "error" })))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected])
+  }, [entity, selected])
 
   const split = () => {
     const header: Record<string, string> = {}
@@ -161,7 +185,7 @@ export default function BatchBuilderPage() {
     setLines([])
   }
   const optName = (field: string, id: string) => {
-    const o = options[field]
+    const o = options[optionKey(entity, field)]
     return (Array.isArray(o) && o.find(x => x.id === id)?.name) || id
   }
   const clearAdded = () => setAdded(a => ({ ...a, [entity]: [] }))
@@ -340,7 +364,7 @@ export default function BatchBuilderPage() {
               const renderField = (f: BatchField) => {
                 const val = draft[f.name] ?? ""
                 const set = (v: string) => setDraft(d => ({ ...d, [f.name]: v }))
-                const opts = options[f.name]
+                const opts = options[optionKey(entity, f.name)]
                 return (
                   <div key={f.name} className="space-y-1">
                     <span className="text-sm">{f.name.replace("Line.", "")}{f.required && <span className="text-rose-600"> *</span>}
