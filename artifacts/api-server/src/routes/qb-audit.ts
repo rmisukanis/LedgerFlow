@@ -199,6 +199,119 @@ router.post("/qb/audit/submit", async (req, res): Promise<void> => {
   res.json({ saved });
 });
 
+function recordOf(body: Record<string, unknown>, name: string) {
+  const record = (body[name] ?? body) as Record<string, unknown>;
+  if (!record?.Id) throw new Error(`QuickBooks did not return the ${name.toLowerCase()}.`);
+  return record;
+}
+
+function depositLinksPayment(deposit: Record<string, unknown>, paymentId: string) {
+  const lines = Array.isArray(deposit.Line) ? deposit.Line : [];
+  return lines.some(line => {
+    const links = Array.isArray((line as { LinkedTxn?: unknown }).LinkedTxn) ? (line as { LinkedTxn: { TxnId?: string; TxnType?: string }[] }).LinkedTxn : [];
+    return links.some(link => String(link.TxnId ?? "") === paymentId && String(link.TxnType ?? "").toLowerCase() === "payment");
+  });
+}
+
+// Links each undeposited payment to the deposit already chosen for it, then stores both records.
+router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
+  const memo = String(req.body?.memo ?? "").trim();
+  const fixes = Array.isArray(req.body?.fixes) ? req.body.fixes as { paymentId?: unknown; depositId?: unknown; accountName?: unknown }[] : null;
+  if (!memo || !fixes || fixes.length === 0) {
+    res.status(400).json({ error: "Send the memo and at least one proposed payment." });
+    return;
+  }
+  const token = await getStoredToken();
+  if (!token) {
+    res.status(401).json({ error: "QuickBooks is not connected" });
+    return;
+  }
+  const prior = await db.select({ paymentId: qbAuditTable.paymentId, depositId: qbAuditTable.depositId }).from(qbAuditTable).where(and(
+    eq(qbAuditTable.realmId, token.realmId),
+    isNull(qbAuditTable.reversedAt),
+  ));
+  const already = new Map(prior.map(row => [row.paymentId, row.depositId]));
+  const saved: { paymentId: string; depositId: string }[] = [];
+  const seen = new Set<string>();
+  for (const fix of fixes) {
+    const paymentId = String(fix.paymentId ?? "");
+    const depositId = String(fix.depositId ?? "");
+    if (!paymentId || seen.has(paymentId)) continue;
+    seen.add(paymentId);
+    if (!depositId) {
+      res.status(saved.length ? 200 : 400).json({ saved, error: `Payment ${paymentId} has no deposit to update.` });
+      return;
+    }
+    const existingDeposit = already.get(paymentId);
+    if (existingDeposit) {
+      saved.push({ paymentId, depositId: existingDeposit });
+      continue;
+    }
+    try {
+      const paymentBody = await qbRequest(`/payment/${paymentId}`, "GET");
+      let payment = recordOf(paymentBody, "Payment");
+      const account = payment.DepositToAccountRef as { value?: string } | undefined;
+      if (String(account?.value ?? "") !== UNDEPOSITED_FUNDS) {
+        const moved = await qbRequest("/payment", "POST", {
+          Id: paymentId,
+          SyncToken: String(payment.SyncToken ?? "0"),
+          sparse: true,
+          DepositToAccountRef: { value: UNDEPOSITED_FUNDS },
+        });
+        payment = recordOf(moved, "Payment");
+        await saveDocument(token.realmId, "Payment", payment);
+      }
+      const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
+      const deposit = recordOf(depositBody, "Deposit");
+      let linked = deposit;
+      if (!depositLinksPayment(deposit, paymentId)) {
+        const amount = Number(payment.TotalAmt ?? 0);
+        if (!Number.isFinite(amount) || amount === 0) throw new Error(`Payment ${paymentId} has no amount.`);
+        const bank = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
+        const update: Record<string, unknown> = {
+          Id: depositId,
+          SyncToken: String(deposit.SyncToken ?? "0"),
+          TxnDate: String(deposit.TxnDate ?? payment.TxnDate ?? ""),
+          PrivateNote: memo,
+          DepositToAccountRef: { value: String(bank?.value ?? "") },
+          Line: [{ Amount: amount, LinkedTxn: [{ TxnId: paymentId, TxnType: "Payment", TxnLineId: "0" }] }],
+        };
+        if (deposit.CurrencyRef) update.CurrencyRef = deposit.CurrencyRef;
+        const updated = await qbRequest("/deposit", "POST", update);
+        linked = recordOf(updated, "Deposit");
+      }
+      const storedDepositBody = await qbRequest(`/deposit/${depositId}`, "GET");
+      const storedDeposit = recordOf(storedDepositBody, "Deposit");
+      await saveDocument(token.realmId, "Deposit", storedDeposit.Id ? storedDeposit : linked);
+      const refreshedBody = await qbRequest(`/payment/${paymentId}`, "GET");
+      const refreshedPayment = recordOf(refreshedBody, "Payment");
+      await saveDocument(token.realmId, "Payment", refreshedPayment);
+      const depositAccount = storedDeposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
+      await db.insert(qbAuditTable).values({
+        realmId: token.realmId,
+        changedAt: new Date(),
+        memo,
+        paymentId,
+        txnDate: String(refreshedPayment.TxnDate ?? ""),
+        totalAmt: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
+        originalDepositAccount: UNDEPOSITED_FUNDS,
+        updatedDepositAccount: UNDEPOSITED_FUNDS,
+        depositId,
+        depositToAccountRef: String(depositAccount?.value ?? ""),
+        depositToAccountRefName: String(depositAccount?.name ?? fix.accountName ?? ""),
+        lineAmount: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
+        linkedTxnId: paymentId,
+        linkedTxnType: "Payment",
+      });
+      saved.push({ paymentId, depositId });
+    } catch (err) {
+      res.status(saved.length ? 200 : 502).json({ saved, error: err instanceof Error ? err.message : `Payment ${paymentId} could not be linked.` });
+      return;
+    }
+  }
+  res.json({ saved });
+});
+
 async function removeDocument(realmId: string, entity: string, qbId: string) {
   await db.delete(qbDocumentsTable).where(and(
     eq(qbDocumentsTable.realmId, realmId),
@@ -229,6 +342,10 @@ router.post("/qb/audit/reverse", async (req, res): Promise<void> => {
   for (const id of ids) {
     const row = byId.get(id);
     if (!row || !row.originalDepositAccount) continue;
+    if (row.originalDepositAccount === row.updatedDepositAccount) {
+      res.status(reversed.length ? 200 : 400).json({ reversed, error: `Change ${id} linked an existing deposit, so Reverse will not delete it.` });
+      return;
+    }
     try {
       if (row.depositId) {
         try {

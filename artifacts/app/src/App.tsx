@@ -10,6 +10,7 @@ import BatchBuilder from '@/pages/batch';
 import Analysis from '@/pages/analysis';
 import Audit from '@/pages/audit';
 import Reconcile from '@/pages/reconcile';
+import OutsideDeposits from '@/pages/outside-deposits';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -50,6 +51,7 @@ function Router() {
       {!activeId && (
         <Switch>
           <Route path="/batch" component={BatchBuilder} />
+          <Route path="/outside-deposits" component={OutsideDeposits} />
           <Route path="/reconcile" component={Reconcile} />
           <Route component={NotFound} />
         </Switch>

@@ -361,12 +361,12 @@ export default function AnalysisPage() {
     setSubmitting(true)
     setError(null)
     try {
-      const response = await fetch(`${import.meta.env.BASE_URL}api/qb/audit/submit`, {
+      const response = await fetch(`${import.meta.env.BASE_URL}api/qb/audit/${analysisStep === 2 ? "submit-link" : "submit"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           memo: fixMemo.trim(),
-          fixes: proposals.map(fix => ({ paymentId: fix.paymentId, originalAccount: fix.originalAccount, accountName: fix.depositToAccountRefName })),
+          fixes: proposals.map(fix => ({ paymentId: fix.paymentId, depositId: fix.depositId, originalAccount: fix.originalAccount, accountName: fix.depositToAccountRefName })),
         }),
       })
       const body = await response.json()
@@ -374,8 +374,9 @@ export default function AnalysisPage() {
       if (saved.size > 0) {
         const deposits = new Map<string, string>((body.saved ?? []).map((item: { paymentId: string; depositId: string }) => [item.paymentId, item.depositId]))
         setRows(current => current?.map(row => saved.has(row.paymentId) ? { ...row, depositAccount: "4", depositId: deposits.get(row.paymentId) ?? row.depositId } : row) ?? current)
+        setOpenDeposits(current => current?.filter(deposit => ![...deposits.values()].includes(deposit.id)) ?? current)
         setProposals(current => current?.filter(fix => !saved.has(fix.paymentId)) ?? null)
-        setNotice(`Saved ${saved.size} change${saved.size === 1 ? "" : "s"} to QuickBooks and the audit register.`)
+        setNotice(`Saved ${saved.size} change${saved.size === 1 ? "" : "s"} to QuickBooks and the database.`)
       }
       if (!response.ok || body.error) throw new Error(body.error ?? "Could not submit the proposed changes")
     } catch (e) {
@@ -595,11 +596,9 @@ export default function AnalysisPage() {
                       <label className={label} htmlFor="fix-memo">Memo</label>
                       <Input id="fix-memo" value={fixMemo} onChange={e => setFixMemo(e.target.value)} data-testid="input-fix-memo" />
                     </div>
-                    {analysisStep === 1 && (
-                      <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
-                        {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
-                      </Button>
-                    )}
+                    <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
+                      {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
+                    </Button>
                   </>
                 )}
               </div>

@@ -8,6 +8,7 @@ import invoicesRouter from "./invoices";
 import apiExplorerRouter from "./api-explorer";
 import apiCollectionsRouter from "./api-collections";
 import transactionsRouter from "./transactions";
+import outsideDepositsRouter from "./outside-deposits";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(invoicesRouter);
 router.use(apiExplorerRouter);
 router.use(apiCollectionsRouter);
 router.use(transactionsRouter);
+router.use(outsideDepositsRouter);
 
 export default router;

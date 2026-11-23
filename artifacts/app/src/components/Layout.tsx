@@ -5,6 +5,7 @@ import {
   Layers,
   Search,
   Scale,
+  Landmark,
   ClipboardList,
   LogOut,
   Hexagon
@@ -23,6 +24,7 @@ export function Layout({ children }: LayoutProps) {
     { name: "Batch Builder", href: "/batch", icon: Layers },
     { name: "Analysis", href: "/analysis", icon: Search },
     { name: "Audit", href: "/audit", icon: ClipboardList },
+    { name: "Outside Deposits", href: "/outside-deposits", icon: Landmark },
     { name: "Reconcile", href: "/reconcile", icon: Scale },
   ]
 
