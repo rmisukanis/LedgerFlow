@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { GeneralLedgerBuilder } from "@/components/GeneralLedgerBuilder"
+import { qbList, qbQuery } from "@/lib/qb"
 import { useGetQbStatus } from "@workspace/api-client-react"
 
 interface Entry {
@@ -51,6 +52,8 @@ export default function ApiExplorerPage() {
   const [showRaw, setShowRaw] = useState(false)
   const [copied, setCopied] = useState(false)
   const [entityOpen, setEntityOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const [accounts, setAccounts] = useState<{ id: string; name: string }[]>([])
   const [colOrder, setColOrder] = useState<string[]>([])
   const table = useMemo(() => reportToTable(result?.data, colOrder), [result, colOrder])
 
@@ -71,7 +74,26 @@ export default function ApiExplorerPage() {
   const ops = useMemo(() => catalog.filter(e => e.method === method && e.folder === folder), [catalog, method, folder])
   const entry = ops.find(o => o.name === opKey)
   const needsId = entry?.path.includes("{id}") ?? false
+  const accountRead = entry?.method === "GET" && entry.folder === "Account" && entry.name === "ReadById"
   const resolvedPath = entry ? entry.path.replace("{id}", id || "{id}") : ""
+
+  useEffect(() => {
+    if (!accountRead) return
+    let cancelled = false
+    const load = async () => {
+      const rows: { id: string; name: string }[] = []
+      for (let start = 1; start <= 3000; start += 1000) {
+        const data = await qbQuery(`SELECT Id, Name FROM Account STARTPOSITION ${start} MAXRESULTS 1000`)
+        const list = qbList<{ Id?: string; Name?: string }>(data, "Account")
+        rows.push(...list.map(account => ({ id: String(account.Id ?? ""), name: String(account.Name ?? account.Id ?? "") })).filter(account => account.id))
+        if (list.length < 1000) break
+      }
+      rows.sort((a, b) => a.name.localeCompare(b.name))
+      if (!cancelled) setAccounts(rows)
+    }
+    void load().catch(() => { if (!cancelled) setAccounts([]) })
+    return () => { cancelled = true }
+  }, [accountRead])
 
   const loadEntry = (e: Entry | undefined) => {
     const saved = e ? localStorage.getItem(storeKey(e)) : null
@@ -185,6 +207,34 @@ export default function ApiExplorerPage() {
                 <SelectContent>{ops.map(o => <SelectItem key={o.name} value={o.name}>{o.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
+            {needsId && accountRead && (
+              <div className="space-y-1.5 w-[240px]">
+                <label className={label}>Account</label>
+                <Popover open={accountOpen} onOpenChange={setAccountOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" role="combobox" className="w-full justify-between font-normal" data-testid="select-account-name">
+                      <span className="truncate">{accounts.find(account => account.id === id)?.name || "Account name"}</span>
+                      <ChevronsUpDown className="w-4 h-4 opacity-50 shrink-0" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Account name…" />
+                      <CommandList>
+                        <CommandEmpty>{accounts.length === 0 ? "Loading accounts…" : "No account found."}</CommandEmpty>
+                        <CommandGroup>
+                          {accounts.map(account => (
+                            <CommandItem key={account.id} value={`${account.name} ${account.id}`} onSelect={() => { setId(account.id); setAccountOpen(false) }}>
+                              {account.name}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            )}
             {needsId && (
               <div className="space-y-1.5 w-[160px]">
                 <label className={label}>Id</label>

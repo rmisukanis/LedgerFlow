@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 import { macroRange } from "@/pages/analysis"
 import { qbList, qbQuery } from "@/lib/qb"
+import { useGetQbStatus } from "@workspace/api-client-react"
 
 const label = "block text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 const selectCls = "w-full h-10 rounded-md border bg-background px-3 text-sm"
@@ -27,11 +28,14 @@ interface AuditRow {
   lineAmount: string
   linkedTxnId: string
   linkedTxnType: string
+  companyName: string
+  transactionType: string
 }
 
 const originalHead = { backgroundColor: "#DBEAFE", color: "#2563EB", boxShadow: "inset 0 -2px 0 #2563EB" }
 const originalCell = { backgroundColor: "#DBEAFE" }
 const updateHead = { backgroundColor: "#FEF9C3", color: "#A16207", boxShadow: "inset 0 -2px 0 #CA8A04" }
+const updateCell = { backgroundColor: "#FEF9C3" }
 const paymentHead = { backgroundColor: "#DCFCE7", color: "#16A34A", boxShadow: "inset 0 -2px 0 #16A34A" }
 const paymentCell = { backgroundColor: "#DCFCE7" }
 const depositHead = { backgroundColor: "#F3E8FF", color: "#9333EA", boxShadow: "inset 0 -2px 0 #9333EA" }
@@ -45,10 +49,14 @@ function when(value: string) {
 }
 
 export default function AuditPage() {
+  const { data: qbStatus } = useGetQbStatus()
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
   const [macro, setMacro] = useState("This Fiscal Year")
   const [fiscalStart, setFiscalStart] = useState(1)
+  const [company, setCompany] = useState("")
+  const [companies, setCompanies] = useState<string[]>([])
+  const [transactionType, setTransactionType] = useState("All")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rows, setRows] = useState<AuditRow[] | null>(null)
@@ -56,6 +64,13 @@ export default function AuditPage() {
   const [selected, setSelected] = useState<number[]>([])
   const [reversing, setReversing] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    const name = qbStatus?.companyName?.trim()
+    if (!name) return
+    setCompanies(current => current.includes(name) ? current : [...current, name].sort((a, b) => a.localeCompare(b)))
+    setCompany(current => current || name)
+  }, [qbStatus])
 
   useEffect(() => {
     qbQuery("SELECT * FROM CompanyInfo")
@@ -83,10 +98,13 @@ export default function AuditPage() {
       const response = await fetch(READ, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate: period.start, endDate: period.end }),
+        body: JSON.stringify({ startDate: period.start, endDate: period.end, companyName: company || undefined, transactionType }),
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? "Could not read the audit register")
+      const names = Array.isArray(body.companies) ? body.companies.filter((name: unknown): name is string => typeof name === "string" && name !== "") : []
+      setCompanies(names)
+      if (!company && typeof body.companyName === "string") setCompany(body.companyName)
       setRows(body.records ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read the audit register")
@@ -143,14 +161,31 @@ export default function AuditPage() {
       </div>
       <Card>
         <CardContent className="p-5 space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end">
-            <div className="space-y-1.5"><label className={label}>start_date</label><DateField onIso={setStartDate} testId="audit-start_date" /></div>
-            <div className="space-y-1.5"><label className={label}>end_date</label><DateField onIso={setEndDate} testId="audit-end_date" /></div>
-            <div className="space-y-1.5">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="space-y-1.5 w-40"><label className={label}>start_date</label><DateField onIso={setStartDate} testId="audit-start_date" /></div>
+            <div className="space-y-1.5 w-40"><label className={label}>end_date</label><DateField onIso={setEndDate} testId="audit-end_date" /></div>
+            <div className="space-y-1.5 w-52">
               <label className={label}>date_macro</label>
               <select className={selectCls} value={macro} onChange={e => setMacro(e.target.value)} data-testid="audit-date_macro">
                 <option value="">— not set —</option>
                 {DATE_MACROS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="space-y-1.5 w-52">
+              <label className={label}>Company name</label>
+              <select className={selectCls} value={company} onChange={e => setCompany(e.target.value)} data-testid="audit-company">
+                <option value="All">All</option>
+                {companies.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5 w-52">
+              <label className={label}>Transaction type</label>
+              <select className={selectCls} value={transactionType} onChange={e => setTransactionType(e.target.value)} data-testid="audit-transaction-type">
+                <option value="All">All</option>
+                <option value="Accounting Fixes">Accounting Fixes</option>
+                <option value="Batch Builder">Batch Builder</option>
               </select>
             </div>
             <Button variant="outline" onClick={pull} disabled={busy || reversing} data-testid="button-pull-audit">
@@ -180,11 +215,13 @@ export default function AuditPage() {
                   </th>
                   <th rowSpan={3} className="text-left px-3 py-2 whitespace-nowrap bg-white">Changed at</th>
                   <th rowSpan={2} colSpan={4} className="text-left px-3 py-2 whitespace-nowrap" style={originalHead}>Original payment</th>
-                  <th colSpan={10} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>Update</th>
+                  <th colSpan={12} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>Update</th>
                 </tr>
                 <tr>
                   <th colSpan={1} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Payment</th>
                   <th colSpan={9} className="text-left px-3 py-2 whitespace-nowrap" style={{ ...depositHead, ...depositBreak }}>Deposit</th>
+                  <th rowSpan={2} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>Company Name</th>
+                  <th rowSpan={2} className="text-left px-3 py-2 whitespace-nowrap" style={updateHead}>Transaction Type</th>
                 </tr>
                 <tr>
                   {["DepositToAccountRef", "TotalAmt", "Id", "TxnDate"].map(heading => (
@@ -198,7 +235,7 @@ export default function AuditPage() {
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={16}>No saved changes in this period.</td></tr>
+                  <tr><td className="px-3 py-4 text-muted-foreground" colSpan={18}>No saved changes in this period.</td></tr>
                 ) : rows.map(row => (
                   <tr key={row.id} className="border-t">
                     <td className="px-3 py-1.5 whitespace-nowrap">
@@ -219,6 +256,8 @@ export default function AuditPage() {
                     <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.linkedTxnId}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.linkedTxnType}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{row.memo}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.companyName}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={updateCell}>{row.transactionType}</td>
                   </tr>
                 ))}
               </tbody>

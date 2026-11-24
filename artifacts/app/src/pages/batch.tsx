@@ -11,6 +11,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { BATCH_SCHEMAS, type BatchField } from "@/data/batch-schemas"
 
 const API = `${import.meta.env.BASE_URL}api/qb/explorer/run`
+const AUDIT_BATCH = `${import.meta.env.BASE_URL}api/qb/audit/batch`
 const label = "text-xs font-semibold text-muted-foreground uppercase tracking-wider"
 
 type Obj = Record<string, unknown>
@@ -151,6 +152,45 @@ function lineObjectToDraft(entity: string, line: Obj): Record<string, string> {
   if (detail.Qty != null) out["Line.Qty"] = String(detail.Qty)
   if (detail.UnitPrice != null) out["Line.UnitPrice"] = String(detail.UnitPrice)
   return out
+}
+
+function money(value: unknown) {
+  if (value === undefined || value === null || value === "") return ""
+  const amount = Number(value)
+  return Number.isFinite(amount) ? amount.toFixed(2) : ""
+}
+
+function accountOf(record: Obj | undefined) {
+  const ref = record?.DepositToAccountRef as { value?: unknown; name?: unknown } | undefined
+  return { value: String(ref?.value ?? ""), name: String(ref?.name ?? "") }
+}
+
+function auditEntry(action: string, entity: string, record: Obj | undefined, fallbackId: string, original?: Obj) {
+  const account = accountOf(record)
+  const previous = accountOf(original)
+  return {
+    action,
+    entity,
+    id: String(record?.Id ?? fallbackId),
+    txnDate: String(record?.TxnDate ?? original?.TxnDate ?? ""),
+    totalAmt: money(record?.TotalAmt ?? original?.TotalAmt),
+    originalAccount: action === "Update" || action === "Delete" ? previous.value : "",
+    updatedAccount: action === "Delete" ? "" : account.value,
+    accountRef: action === "Delete" ? previous.value : account.value,
+    accountName: action === "Delete" ? previous.name : account.name,
+  }
+}
+
+async function saveBatchAudit(entries: ReturnType<typeof auditEntry>[]) {
+  const ready = entries.filter(entry => entry.id)
+  if (ready.length === 0) return
+  const response = await fetch(AUDIT_BATCH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries: ready }),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error ?? "The QuickBooks change was saved, but it could not be added to the audit register.")
 }
 
 function describe(entity: string, o: Obj | undefined, bId: unknown): string {
@@ -688,6 +728,7 @@ export default function BatchBuilderPage() {
   const send = async () => {
     setSending(true)
     const out: string[] = []
+    const audited: ReturnType<typeof auditEntry>[] = []
     try {
       for (let i = 0; i < records.length; i += 30) {
         const chunk = records.slice(i, i + 30)
@@ -704,12 +745,17 @@ export default function BatchBuilderPage() {
         if (items.length === 0) out.push(`Batch ${i / 30 + 1}: failed — ${JSON.stringify(j.data)}`)
         for (const it of items) {
           const fault = it.Fault as { Error?: { Message?: string; Detail?: string }[] } | undefined
-          out.push(
-            fault
-              ? `Record ${it.bId}: FAILED — ${fault.Error?.[0]?.Message ?? ""} ${fault.Error?.[0]?.Detail ?? ""}`
-              : describe(entity, it[entity] as Obj | undefined, it.bId),
-          )
+          const saved = it[entity] as Obj | undefined
+          if (fault) out.push(`Record ${it.bId}: FAILED — ${fault.Error?.[0]?.Message ?? ""} ${fault.Error?.[0]?.Detail ?? ""}`)
+          else {
+            out.push(describe(entity, saved, it.bId))
+            audited.push(auditEntry("Create", entity, saved, ""))
+          }
         }
+      }
+      if (audited.length > 0) {
+        try { await saveBatchAudit(audited) }
+        catch (e) { out.push(`Audit: ${e instanceof Error ? e.message : "could not save the audit register"}`) }
       }
     } catch (e) {
       out.push(`Error: ${e instanceof Error ? e.message : "request failed"}`)
@@ -772,6 +818,13 @@ export default function BatchBuilderPage() {
       })
       const record = payload.data?.[recordEntity]
       const saved = record && typeof record === "object" && !Array.isArray(record) ? record as Obj : undefined
+      const action = mode === "delete" ? "Delete" : mode === "copy" ? "Copy" : "Update"
+      const source = mode === "delete" ? loaded ?? undefined : saved
+      try {
+        await saveBatchAudit([auditEntry(action, recordEntity, source, String(body.Id ?? ""), loaded ?? undefined)])
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : "The QuickBooks change was saved, but it could not be added to the audit register.")
+      }
       if (mode === "delete") {
         setLoaded(null)
         setEdits({})

@@ -1,10 +1,13 @@
 import { Router, type IRouter } from "express";
-import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { db, qbAuditTable, qbDocumentsTable } from "@workspace/db";
 import { getAuthorizedClient, getQbApiBase, getStoredToken } from "../lib/qb-client";
 
 const router: IRouter = Router();
 const UNDEPOSITED_FUNDS = "4";
+const ACCOUNTING_FIXES = "Accounting Fixes";
+const BATCH_BUILDER = "Batch Builder";
+const BATCH_ACTIONS = new Set(["Create", "Update", "Delete", "Copy"]);
 
 function updatedTime(record: Record<string, unknown>) {
   const meta = record.MetaData as { LastUpdatedTime?: string } | undefined;
@@ -82,24 +85,94 @@ async function saveDocument(realmId: string, entity: string, record: Record<stri
   ));
 }
 
-// Reads saved fixes for this company. The range is the date the fix was saved, not the QuickBooks transaction date.
+async function currentCompany() {
+  const token = await getStoredToken();
+  if (!token) return null;
+  let companyName = token.companyName?.trim() ?? "";
+  if (!companyName) {
+    const body = await qbRequest(`/companyinfo/${token.realmId}`, "GET");
+    const info = (body.CompanyInfo ?? body) as { CompanyName?: string };
+    companyName = String(info.CompanyName ?? "").trim();
+  }
+  return { realmId: token.realmId, companyName };
+}
+
+// Reads saved changes. The range is the date the change was saved, not the QuickBooks transaction date.
 router.post("/qb/audit/read", async (req, res): Promise<void> => {
   const start = String(req.body?.startDate ?? "");
   const end = String(req.body?.endDate ?? "");
+  const company = String(req.body?.companyName ?? "").trim();
+  const transactionType = String(req.body?.transactionType ?? "All");
   if ((start && !/^\d{4}-\d{2}-\d{2}$/.test(start)) || (end && !/^\d{4}-\d{2}-\d{2}$/.test(end))) {
     res.status(400).json({ error: "Dates must be YYYY-MM-DD." });
     return;
   }
-  const token = await getStoredToken();
-  if (!token) {
+  if (transactionType !== "All" && transactionType !== ACCOUNTING_FIXES && transactionType !== BATCH_BUILDER) {
+    res.status(400).json({ error: "Transaction type must be Accounting Fixes, Batch Builder, or All." });
+    return;
+  }
+  const current = await currentCompany();
+  if (!current) {
     res.status(401).json({ error: "QuickBooks is not connected" });
     return;
   }
-  const where = [eq(qbAuditTable.realmId, token.realmId), isNull(qbAuditTable.reversedAt)];
+  const selectedCompany = company || current.companyName;
+  const where = [isNull(qbAuditTable.reversedAt)];
+  if (selectedCompany !== "All") where.push(eq(qbAuditTable.companyName, selectedCompany));
+  if (transactionType !== "All") where.push(eq(qbAuditTable.transactionType, transactionType));
   if (start) where.push(gte(qbAuditTable.changedAt, new Date(`${start}T00:00:00.000Z`)));
   if (end) where.push(lte(qbAuditTable.changedAt, new Date(`${end}T23:59:59.999Z`)));
-  const records = await db.select().from(qbAuditTable).where(and(...where)).orderBy(desc(qbAuditTable.changedAt));
-  res.json({ records });
+  const [records, companyRows] = await Promise.all([
+    db.select().from(qbAuditTable).where(and(...where)).orderBy(desc(qbAuditTable.changedAt)),
+    db.selectDistinct({ companyName: qbAuditTable.companyName }).from(qbAuditTable).where(isNull(qbAuditTable.reversedAt)).orderBy(asc(qbAuditTable.companyName)),
+  ]);
+  const companies = [...new Set([current.companyName, ...companyRows.map(row => row.companyName)].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  res.json({ records, companies, companyName: current.companyName });
+});
+
+// Records a successful Batch Builder create, copy, delete, or update. QuickBooks was already changed by the caller.
+router.post("/qb/audit/batch", async (req, res): Promise<void> => {
+  const entries = Array.isArray(req.body?.entries) ? req.body.entries as Record<string, unknown>[] : null;
+  if (!entries || entries.length === 0) {
+    res.status(400).json({ error: "Send at least one Batch Builder change." });
+    return;
+  }
+  const current = await currentCompany();
+  if (!current) {
+    res.status(401).json({ error: "QuickBooks is not connected" });
+    return;
+  }
+  const rows = [];
+  for (const entry of entries) {
+    const action = String(entry.action ?? "");
+    const entity = String(entry.entity ?? "").trim();
+    const id = String(entry.id ?? "").trim();
+    if (!BATCH_ACTIONS.has(action) || !entity || !id) {
+      res.status(400).json({ error: "Each Batch Builder change needs an action, entity, and id." });
+      return;
+    }
+    const totalAmt = String(entry.totalAmt ?? "");
+    rows.push({
+      realmId: current.realmId,
+      changedAt: new Date(),
+      memo: `${action} ${entity}`,
+      paymentId: id,
+      txnDate: String(entry.txnDate ?? ""),
+      totalAmt,
+      originalDepositAccount: String(entry.originalAccount ?? ""),
+      updatedDepositAccount: String(entry.updatedAccount ?? ""),
+      depositId: entity === "Deposit" ? id : "",
+      depositToAccountRef: String(entry.accountRef ?? ""),
+      depositToAccountRefName: String(entry.accountName ?? ""),
+      lineAmount: totalAmt,
+      linkedTxnId: id,
+      linkedTxnType: entity,
+      companyName: current.companyName,
+      transactionType: BATCH_BUILDER,
+    });
+  }
+  await db.insert(qbAuditTable).values(rows);
+  res.json({ saved: rows.length });
 });
 
 // Moves each payment to Undeposited Funds, creates the bank deposit, and records both in the database.
@@ -174,6 +247,7 @@ router.post("/qb/audit/submit", async (req, res): Promise<void> => {
       const refreshedPayment = (refreshedBody.Payment ?? refreshedBody) as Record<string, unknown>;
       if (refreshedPayment.Id) await saveDocument(token.realmId, "Payment", refreshedPayment);
       const depositAccount = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
+      const company = await currentCompany();
       await db.insert(qbAuditTable).values({
         realmId: token.realmId,
         changedAt: new Date(),
@@ -189,6 +263,8 @@ router.post("/qb/audit/submit", async (req, res): Promise<void> => {
         lineAmount: amount.toFixed(2),
         linkedTxnId: paymentId,
         linkedTxnType: "Payment",
+        companyName: company?.companyName ?? "",
+        transactionType: ACCOUNTING_FIXES,
       });
       saved.push({ paymentId, depositId: String(deposit.Id ?? "") });
     } catch (err) {
@@ -287,6 +363,7 @@ router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
       const refreshedPayment = recordOf(refreshedBody, "Payment");
       await saveDocument(token.realmId, "Payment", refreshedPayment);
       const depositAccount = storedDeposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
+      const company = await currentCompany();
       await db.insert(qbAuditTable).values({
         realmId: token.realmId,
         changedAt: new Date(),
@@ -302,6 +379,8 @@ router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
         lineAmount: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
         linkedTxnId: paymentId,
         linkedTxnType: "Payment",
+        companyName: company?.companyName ?? "",
+        transactionType: ACCOUNTING_FIXES,
       });
       saved.push({ paymentId, depositId });
     } catch (err) {
@@ -342,6 +421,10 @@ router.post("/qb/audit/reverse", async (req, res): Promise<void> => {
   for (const id of ids) {
     const row = byId.get(id);
     if (!row || !row.originalDepositAccount) continue;
+    if (row.transactionType === BATCH_BUILDER) {
+      res.status(reversed.length ? 200 : 400).json({ reversed, error: `Change ${id} came from Batch Builder, so Reverse will not undo it.` });
+      return;
+    }
     if (row.originalDepositAccount === row.updatedDepositAccount) {
       res.status(reversed.length ? 200 : 400).json({ reversed, error: `Change ${id} linked an existing deposit, so Reverse will not delete it.` });
       return;

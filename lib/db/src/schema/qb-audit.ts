@@ -17,6 +17,9 @@ export const qbAuditTable = pgTable("qb_audit", {
   lineAmount: text("line_amount").notNull(),
   linkedTxnId: text("linked_txn_id").notNull(),
   linkedTxnType: text("linked_txn_type").notNull(),
+  companyName: text("company_name").notNull().default(""),
+  // "Accounting Fixes" for Analysis and Outside Deposits. "Batch Builder" for batch create, copy, delete, and update.
+  transactionType: text("transaction_type").notNull().default(""),
   // Set when Reverse deletes the deposit and puts the payment back on its original account.
   reversedAt: timestamp("reversed_at", { withTimezone: true }),
 }, (table) => [
