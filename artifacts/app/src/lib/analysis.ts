@@ -11,6 +11,8 @@ export const STEP_ONE_DETAIL = "Invoices that have payments but are coded direct
 export const STEP_TWO_NAME = "Step Two"
 export const STEP_TWO_DETAIL = "Undeposited funds without a connected deposit"
 
+export const BANK_CHARGES_ACCOUNT = "8"
+
 export interface ProposedFix {
   paymentId: string
   txnDate: string
@@ -23,6 +25,9 @@ export interface ProposedFix {
   linkedTxnId: string
   linkedTxnType: string
   depositId: string
+  depositTotal: string
+  feeAmount: string
+  feeError: string
 }
 
 export interface UndepositedPayment {
@@ -325,6 +330,65 @@ export function proposeUndepositedMatches(rows: ReviewRow[], matches: Map<string
       linkedTxnId: row.paymentId,
       linkedTxnType: "Payment",
       depositId: deposit.id,
+      depositTotal: formatCurrency(deposit.total),
+      feeAmount: "",
+      feeError: "",
+    })
+  }
+  return fixes
+}
+
+function cents(value: number) {
+  return Math.round(value * 100)
+}
+
+function parsedMoney(value: string) {
+  const amount = Number(String(value).replace(/[^0-9.-]/g, ""))
+  return Number.isFinite(amount) ? amount : Number.NaN
+}
+
+// Links each chosen deposit to its payment. A difference has to be the saved amount_fee.
+export function proposeChosenDeposits(rows: ReviewRow[], choices: { paymentId: string; depositId: string }[], deposits: UnlinkedDeposit[], lines: OutsideDepositLine[]): ProposedFix[] {
+  const byPayment = new Map<string, ReviewRow>()
+  for (const row of rows) if (row.paymentId && !byPayment.has(row.paymentId)) byPayment.set(row.paymentId, row)
+  const byDeposit = new Map(deposits.map(deposit => [deposit.id, deposit]))
+  const fixes: ProposedFix[] = []
+  for (const choice of choices) {
+    const row = byPayment.get(choice.paymentId)
+    const deposit = byDeposit.get(choice.depositId)
+    if (!row || !deposit) continue
+    const payment = parsedMoney(row.paymentTotal)
+    const saved = lines.filter(line => line.depositId === deposit.id && cents(line.amountTotal) === cents(payment))
+    const line = saved.find(item => item.amountFee != null) ?? saved[0]
+    const depositAmount = line?.amountNet ?? deposit.total
+    const difference = cents(payment) - cents(depositAmount)
+    let feeAmount = ""
+    let feeError = ""
+    if (difference !== 0) {
+      const fee = line?.amountFee
+      if (fee == null) {
+        feeError = `Payment ${row.paymentId} is ${formatCurrency(payment)} and the deposit amount is ${formatCurrency(depositAmount)}. No amount_fee is stored, so this proposal cannot be submitted.`
+      } else if (cents(fee) !== Math.abs(difference)) {
+        feeError = `Payment ${row.paymentId} is ${formatCurrency(payment)} and the deposit amount is ${formatCurrency(depositAmount)}. The stored amount_fee is ${formatCurrency(fee)}, so this proposal cannot be submitted.`
+      } else {
+        feeAmount = formatCurrency(fee)
+      }
+    }
+    fixes.push({
+      paymentId: row.paymentId,
+      txnDate: row.paymentTxnDate,
+      totalAmt: row.paymentTotal,
+      originalAccount: row.depositAccount,
+      proposedAccount: UNDEPOSITED_FUNDS,
+      depositToAccountRef: deposit.accountId,
+      depositToAccountRefName: deposit.accountName,
+      lineAmount: row.paymentTotal,
+      linkedTxnId: row.paymentId,
+      linkedTxnType: "Payment",
+      depositId: deposit.id,
+      depositTotal: formatCurrency(deposit.total),
+      feeAmount,
+      feeError,
     })
   }
   return fixes
@@ -349,6 +413,9 @@ export function proposeDirectPaymentFixes(rows: ReviewRow[], accountNames: Map<s
       linkedTxnId: row.paymentId,
       linkedTxnType: "Payment",
       depositId: "",
+      depositTotal: row.paymentTotal,
+      feeAmount: "",
+      feeError: "",
     })
   }
   return fixes

@@ -1,10 +1,11 @@
 import { Router, type IRouter } from "express";
 import { and, asc, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
-import { db, qbAuditTable, qbDocumentsTable } from "@workspace/db";
+import { db, outsideDepositTransactionsTable, qbAuditTable, qbDocumentsTable } from "@workspace/db";
 import { getAuthorizedClient, getQbApiBase, getStoredToken } from "../lib/qb-client";
 
 const router: IRouter = Router();
 const UNDEPOSITED_FUNDS = "4";
+const BANK_CHARGES = "8";
 const ACCOUNTING_FIXES = "Accounting Fixes";
 const BATCH_BUILDER = "Batch Builder";
 const BATCH_ACTIONS = new Set(["Create", "Update", "Delete", "Copy"]);
@@ -289,10 +290,16 @@ function depositLinksPayment(deposit: Record<string, unknown>, paymentId: string
   });
 }
 
+function moneyCents(value: unknown) {
+  const amount = Number(value ?? Number.NaN);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : Number.NaN;
+}
+
 // Links each undeposited payment to the deposit already chosen for it, then stores both records.
+// A payment that does not equal its deposit amount needs a stored amount_fee. That fee is a deposit line to the chosen charge account.
 router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
   const memo = String(req.body?.memo ?? "").trim();
-  const fixes = Array.isArray(req.body?.fixes) ? req.body.fixes as { paymentId?: unknown; depositId?: unknown; accountName?: unknown }[] : null;
+  const fixes = Array.isArray(req.body?.fixes) ? req.body.fixes as { paymentId?: unknown; depositId?: unknown; accountName?: unknown; feeAmount?: unknown; feeAccountId?: unknown }[] : null;
   if (!memo || !fixes || fixes.length === 0) {
     res.status(400).json({ error: "Send the memo and at least one proposed payment." });
     return;
@@ -309,13 +316,14 @@ router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
   const already = new Map(prior.map(row => [row.paymentId, row.depositId]));
   const saved: { paymentId: string; depositId: string }[] = [];
   const seen = new Set<string>();
+  const pending: { paymentId: string; depositId: string; accountName: string; feeAccountId: string }[] = [];
   for (const fix of fixes) {
     const paymentId = String(fix.paymentId ?? "");
     const depositId = String(fix.depositId ?? "");
     if (!paymentId || seen.has(paymentId)) continue;
     seen.add(paymentId);
     if (!depositId) {
-      res.status(saved.length ? 200 : 400).json({ saved, error: `Payment ${paymentId} has no deposit to update.` });
+      res.status(400).json({ saved, error: `Payment ${paymentId} has no deposit to update. Nothing was saved.` });
       return;
     }
     const existingDeposit = already.get(paymentId);
@@ -323,70 +331,124 @@ router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
       saved.push({ paymentId, depositId: existingDeposit });
       continue;
     }
-    try {
-      const paymentBody = await qbRequest(`/payment/${paymentId}`, "GET");
-      let payment = recordOf(paymentBody, "Payment");
-      const account = payment.DepositToAccountRef as { value?: string } | undefined;
-      if (String(account?.value ?? "") !== UNDEPOSITED_FUNDS) {
-        const moved = await qbRequest("/payment", "POST", {
-          Id: paymentId,
-          SyncToken: String(payment.SyncToken ?? "0"),
-          sparse: true,
-          DepositToAccountRef: { value: UNDEPOSITED_FUNDS },
-        });
-        payment = recordOf(moved, "Payment");
-        await saveDocument(token.realmId, "Payment", payment);
+    pending.push({
+      paymentId,
+      depositId,
+      accountName: String(fix.accountName ?? ""),
+      feeAccountId: String(fix.feeAccountId ?? ""),
+    });
+  }
+  const grouped = new Map<string, typeof pending>();
+  for (const fix of pending) grouped.set(fix.depositId, [...(grouped.get(fix.depositId) ?? []), fix]);
+  try {
+    for (const [depositId, group] of grouped) {
+      const prepared: { paymentId: string; payment: Record<string, unknown>; amount: number; fee: number; feeAccountId: string }[] = []
+      for (const fix of group) {
+        const paymentBody = await qbRequest(`/payment/${fix.paymentId}`, "GET");
+        const payment = recordOf(paymentBody, "Payment");
+        const amount = Number(payment.TotalAmt ?? 0);
+        if (!Number.isFinite(amount) || amount === 0) throw new Error(`Payment ${fix.paymentId} has no amount.`);
+        const stored = await db.select({
+          amountTotal: outsideDepositTransactionsTable.amountTotal,
+          amountFee: outsideDepositTransactionsTable.amountFee,
+          amountNet: outsideDepositTransactionsTable.amountNet,
+        }).from(outsideDepositTransactionsTable).where(eq(outsideDepositTransactionsTable.depositId, depositId));
+        const match = stored.find(row => moneyCents(row.amountTotal) === moneyCents(amount));
+        const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
+        const deposit = recordOf(depositBody, "Deposit");
+        const depositAmount = match?.amountNet != null && match.amountNet !== "" ? Number(match.amountNet) : Number(deposit.TotalAmt ?? 0);
+        const difference = moneyCents(amount) - moneyCents(depositAmount);
+        let fee = 0;
+        if (difference !== 0) {
+          if (match?.amountFee == null || match.amountFee === "") {
+            throw new Error(`Payment ${fix.paymentId} is ${amount.toFixed(2)} and the deposit amount is ${depositAmount.toFixed(2)}. No amount_fee is stored. Nothing was saved.`);
+          }
+          fee = Math.abs(Number(match.amountFee));
+          if (moneyCents(fee) !== Math.abs(difference)) {
+            throw new Error(`Payment ${fix.paymentId} is ${amount.toFixed(2)} and the deposit amount is ${depositAmount.toFixed(2)}. The stored amount_fee is ${fee.toFixed(2)}. Nothing was saved.`);
+          }
+          if (!fix.feeAccountId) throw new Error(`Choose the charge account for payment ${fix.paymentId}. Nothing was saved.`);
+        }
+        prepared.push({ paymentId: fix.paymentId, payment, amount, fee, feeAccountId: difference === 0 ? "" : (fix.feeAccountId || BANK_CHARGES) });
       }
       const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
       const deposit = recordOf(depositBody, "Deposit");
-      let linked = deposit;
-      if (!depositLinksPayment(deposit, paymentId)) {
-        const amount = Number(payment.TotalAmt ?? 0);
-        if (!Number.isFinite(amount) || amount === 0) throw new Error(`Payment ${paymentId} has no amount.`);
-        const bank = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
-        const update: Record<string, unknown> = {
-          Id: depositId,
-          SyncToken: String(deposit.SyncToken ?? "0"),
-          TxnDate: String(deposit.TxnDate ?? payment.TxnDate ?? ""),
-          PrivateNote: memo,
-          DepositToAccountRef: { value: String(bank?.value ?? "") },
-          Line: [{ Amount: amount, LinkedTxn: [{ TxnId: paymentId, TxnType: "Payment", TxnLineId: "0" }] }],
-        };
-        if (deposit.CurrencyRef) update.CurrencyRef = deposit.CurrencyRef;
-        const updated = await qbRequest("/deposit", "POST", update);
-        linked = recordOf(updated, "Deposit");
+      const bank = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
+      const lines = prepared.flatMap(item => {
+        const linked = { Amount: item.amount, LinkedTxn: [{ TxnId: item.paymentId, TxnType: "Payment", TxnLineId: "0" }] };
+        if (!item.fee) return [linked];
+        return [linked, {
+          Amount: item.amount >= 0 ? -item.fee : item.fee,
+          DetailType: "DepositLineDetail",
+          Description: "Bank Charges",
+          DepositLineDetail: { AccountRef: { value: item.feeAccountId || BANK_CHARGES } },
+        }];
+      });
+      const postedTotal = lines.reduce((sum, line) => sum + Number(line.Amount), 0);
+      if (moneyCents(postedTotal) !== moneyCents(deposit.TotalAmt)) {
+        throw new Error(`Deposit ${depositId} is ${Number(deposit.TotalAmt ?? 0).toFixed(2)}. The payments and fees total ${postedTotal.toFixed(2)}. Nothing was saved.`);
       }
+      for (const item of prepared) {
+        const account = item.payment.DepositToAccountRef as { value?: string } | undefined;
+        if (String(account?.value ?? "") !== UNDEPOSITED_FUNDS) {
+          const moved = await qbRequest("/payment", "POST", {
+            Id: item.paymentId,
+            SyncToken: String(item.payment.SyncToken ?? "0"),
+            sparse: true,
+            DepositToAccountRef: { value: UNDEPOSITED_FUNDS },
+          });
+          item.payment = recordOf(moved, "Payment");
+          await saveDocument(token.realmId, "Payment", item.payment);
+        }
+      }
+      const freshBody = await qbRequest(`/deposit/${depositId}`, "GET");
+      const fresh = recordOf(freshBody, "Deposit");
+      const update: Record<string, unknown> = {
+        Id: depositId,
+        SyncToken: String(fresh.SyncToken ?? "0"),
+        TxnDate: String(fresh.TxnDate ?? prepared[0]?.payment.TxnDate ?? ""),
+        PrivateNote: memo,
+        DepositToAccountRef: { value: String(bank?.value ?? "") },
+        Line: lines,
+      };
+      if (fresh.CurrencyRef) update.CurrencyRef = fresh.CurrencyRef;
+      await qbRequest("/deposit", "POST", update);
       const storedDepositBody = await qbRequest(`/deposit/${depositId}`, "GET");
       const storedDeposit = recordOf(storedDepositBody, "Deposit");
-      await saveDocument(token.realmId, "Deposit", storedDeposit.Id ? storedDeposit : linked);
-      const refreshedBody = await qbRequest(`/payment/${paymentId}`, "GET");
-      const refreshedPayment = recordOf(refreshedBody, "Payment");
-      await saveDocument(token.realmId, "Payment", refreshedPayment);
+      await saveDocument(token.realmId, "Deposit", storedDeposit);
       const depositAccount = storedDeposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
       const company = await currentCompany();
-      await db.insert(qbAuditTable).values({
-        realmId: token.realmId,
-        changedAt: new Date(),
-        memo,
-        paymentId,
-        txnDate: String(refreshedPayment.TxnDate ?? ""),
-        totalAmt: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
-        originalDepositAccount: UNDEPOSITED_FUNDS,
-        updatedDepositAccount: UNDEPOSITED_FUNDS,
-        depositId,
-        depositToAccountRef: String(depositAccount?.value ?? ""),
-        depositToAccountRefName: String(depositAccount?.name ?? fix.accountName ?? ""),
-        lineAmount: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
-        linkedTxnId: paymentId,
-        linkedTxnType: "Payment",
-        companyName: company?.companyName ?? "",
-        transactionType: ACCOUNTING_FIXES,
-      });
-      saved.push({ paymentId, depositId });
-    } catch (err) {
-      res.status(saved.length ? 200 : 502).json({ saved, error: err instanceof Error ? err.message : `Payment ${paymentId} could not be linked.` });
-      return;
+      for (const item of prepared) {
+        const refreshedBody = await qbRequest(`/payment/${item.paymentId}`, "GET");
+        const refreshedPayment = recordOf(refreshedBody, "Payment");
+        await saveDocument(token.realmId, "Payment", refreshedPayment);
+        const source = group.find(fix => fix.paymentId === item.paymentId);
+        await db.insert(qbAuditTable).values({
+          realmId: token.realmId,
+          changedAt: new Date(),
+          memo,
+          paymentId: item.paymentId,
+          txnDate: String(refreshedPayment.TxnDate ?? ""),
+          totalAmt: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
+          originalDepositAccount: UNDEPOSITED_FUNDS,
+          updatedDepositAccount: UNDEPOSITED_FUNDS,
+          depositId,
+          depositToAccountRef: String(depositAccount?.value ?? ""),
+          depositToAccountRefName: String(depositAccount?.name ?? source?.accountName ?? ""),
+          lineAmount: Number(refreshedPayment.TotalAmt ?? 0).toFixed(2),
+          linkedTxnId: item.paymentId,
+          linkedTxnType: "Payment",
+          companyName: company?.companyName ?? "",
+          transactionType: ACCOUNTING_FIXES,
+        });
+        saved.push({ paymentId: item.paymentId, depositId });
+      }
     }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "The proposed deposit could not be linked.";
+    const status = saved.length > 0 ? 200 : /Nothing was saved|charge account/.test(message) ? 400 : 502;
+    res.status(status).json({ saved, error: message });
+    return;
   }
   res.json({ saved });
 });

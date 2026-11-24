@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronsUpDown, Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 import { depositIdsOf, isPayment, loadDepositCleared, loadDeposits, loadPayments, paymentIdsOf, reviewRows, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
 import { invoiceIdsOf, loadInvoices, paymentIdsOfDeposits, reviewDepositRows } from "@/lib/deposit-chain"
-import { defaultFixMemo, depositLineSuggestions, invoicePaymentsAwaitingDeposit, matchUndepositedFunds, proposeDirectPaymentFixes, proposeUndepositedMatches, stepOne, stepTwoMemo, stepTwoRows, STEP_ONE_DETAIL, STEP_ONE_NAME, STEP_TWO_DETAIL, STEP_TWO_NAME, undepositedPayments, unlinkedDeposits, type AnalysisStep, type OutsideDepositLine, type ProposedFix, type UnlinkedDeposit } from "@/lib/analysis"
+import { BANK_CHARGES_ACCOUNT, defaultFixMemo, depositLineSuggestions, invoicePaymentsAwaitingDeposit, matchUndepositedFunds, proposeChosenDeposits, proposeDirectPaymentFixes, stepOne, stepTwoMemo, stepTwoRows, STEP_ONE_DETAIL, STEP_ONE_NAME, STEP_TWO_DETAIL, STEP_TWO_NAME, undepositedPayments, unlinkedDeposits, type AnalysisStep, type OutsideDepositLine, type ProposedFix, type UnlinkedDeposit } from "@/lib/analysis"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 import { formatCurrency } from "@/lib/utils"
 
@@ -196,6 +196,8 @@ export default function AnalysisPage() {
   const [fixMemo, setFixMemo] = useState(defaultFixMemo)
   const [proposals, setProposals] = useState<ProposedFix[] | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [chosenDeposit, setChosenDeposit] = useState<Record<string, string>>({})
+  const [chargeAccounts, setChargeAccounts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     qbQuery("SELECT Id, DisplayName FROM Customer MAXRESULTS 1000")
@@ -273,7 +275,18 @@ export default function AnalysisPage() {
     if (accountIds.length === 0) return found
     return found.filter(item => accountIds.includes(item.deposit.accountId) || (item.payment != null && accountIds.includes(item.payment.depositAccount)))
   }, [analysisStep, rows, openDeposits, outsideLines, accountIds])
-  const invoiceGroups: ChainGroup[] = ["invoice", "payment"]
+  const suggestedDeposit = useMemo(() => {
+    const matches = new Map<string, string>()
+    for (const item of suggestions) {
+      if (!item.payment || item.likelihood == null || matches.has(item.payment.paymentId)) continue
+      matches.set(item.payment.paymentId, item.deposit.id)
+    }
+    return matches
+  }, [suggestions])
+  const proposedDeposit = (paymentId: string) => {
+    if (Object.prototype.hasOwnProperty.call(chosenDeposit, paymentId)) return chosenDeposit[paymentId]
+    return suggestedDeposit.get(paymentId) ?? ""
+  }
 
   const loadOpenDeposits = async () => {
     if (!period.start && !period.end) return
@@ -339,14 +352,24 @@ export default function AnalysisPage() {
         setError("Wait for the deposit lookup to finish.")
         return
       }
-      const matches = matchUndepositedFunds(undepositedPayments(rows), openDeposits)
-      if (matches.size === 0) {
-        setError("No undeposited payment has one clear deposit match.")
+      const seen = new Set<string>()
+      const choices: { paymentId: string; depositId: string }[] = []
+      for (const row of shownRows ?? []) {
+        if (!row.paymentId || seen.has(row.paymentId)) continue
+        const depositId = proposedDeposit(row.paymentId)
+        if (!depositId) continue
+        seen.add(row.paymentId)
+        choices.push({ paymentId: row.paymentId, depositId })
+      }
+      if (choices.length === 0) {
+        setError("Choose a proposed deposit before proposing a fix.")
         setProposals(null)
         return
       }
+      const fixes = proposeChosenDeposits(rows, choices, openDeposits, outsideLines)
       setError(null)
-      setProposals(proposeUndepositedMatches(rows, matches))
+      setChargeAccounts(Object.fromEntries(fixes.filter(fix => fix.feeAmount).map(fix => [fix.paymentId, BANK_CHARGES_ACCOUNT])))
+      setProposals(fixes)
       return
     }
     const flagged = stepOne(rows)
@@ -377,6 +400,16 @@ export default function AnalysisPage() {
       setError("Enter a memo before submitting.")
       return
     }
+    const blocked = proposals.filter(fix => fix.feeError)
+    if (blocked.length > 0) {
+      setError(blocked.map(fix => fix.feeError).join(" "))
+      return
+    }
+    const missingCharge = proposals.find(fix => fix.feeAmount && !chargeAccounts[fix.paymentId])
+    if (missingCharge) {
+      setError(`Choose the charge account for payment ${missingCharge.paymentId}.`)
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
@@ -385,7 +418,14 @@ export default function AnalysisPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           memo: fixMemo.trim(),
-          fixes: proposals.map(fix => ({ paymentId: fix.paymentId, depositId: fix.depositId, originalAccount: fix.originalAccount, accountName: fix.depositToAccountRefName })),
+          fixes: proposals.map(fix => ({
+            paymentId: fix.paymentId,
+            depositId: fix.depositId,
+            originalAccount: fix.originalAccount,
+            accountName: fix.depositToAccountRefName,
+            feeAmount: fix.feeAmount,
+            feeAccountId: fix.feeAmount ? chargeAccounts[fix.paymentId] ?? "" : "",
+          })),
         }),
       })
       const body = await response.json()
@@ -424,6 +464,8 @@ export default function AnalysisPage() {
     setOpenDeposits(null)
     setOutsideLines([])
     setProposals(null)
+    setChosenDeposit({})
+    setChargeAccounts({})
     try {
       if (kind === "payment") {
         setError("Payment results are not wired up yet.")
@@ -616,7 +658,7 @@ export default function AnalysisPage() {
                       <label className={label} htmlFor="fix-memo">Memo</label>
                       <Input id="fix-memo" value={fixMemo} onChange={e => setFixMemo(e.target.value)} data-testid="input-fix-memo" />
                     </div>
-                    <Button type="button" onClick={submit} disabled={submitting} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
+                    <Button type="button" onClick={submit} disabled={submitting || (proposals?.some(fix => fix.feeError) ?? false)} data-testid="button-submit-fixes" style={{ backgroundColor: "#EA580C", color: "#FFFFFF", borderColor: "#EA580C" }}>
                       {submitting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Submit Proposed Changes
                     </Button>
                   </>
@@ -638,26 +680,47 @@ export default function AnalysisPage() {
               <table className="text-xs w-full" data-testid="table-invoices">
                 <thead className="sticky top-0">
                   <tr>
-                    <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
-                    {invoiceGroups.map(group => (
-                      <th key={group} colSpan={groupColumns(group).length} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{GROUP_TITLES[group]}</th>
-                    ))}
+                    <th rowSpan={2} className="sticky left-0 z-20 w-0 px-2 py-2 whitespace-nowrap border-r bg-white" style={depositHead}>Proposed deposit</th>
+                    <th rowSpan={2} className="text-right px-3 py-2 whitespace-nowrap bg-white">#</th>
+                    <th colSpan={INVOICE_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>Invoice</th>
+                    <th colSpan={PAYMENT_COLUMNS.length} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Payment</th>
                   </tr>
                   <tr>
-                    {invoiceGroups.flatMap(group => groupColumns(group).map(h => (
-                      <th key={`${group}-${h}`} className="text-left px-3 py-2 whitespace-nowrap" style={groupHead(group)}>{h}</th>
-                    )))}
+                    {INVOICE_COLUMNS.map(heading => (
+                      <th key={`invoice-${heading}`} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>{heading}</th>
+                    ))}
+                    {PAYMENT_COLUMNS.map(heading => (
+                      <th key={`payment-${heading}`} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>{heading}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {(shownRows?.length ?? 0) === 0 ? (
-                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={invoiceGroups.reduce((count, group) => count + groupColumns(group).length, 1)}>No payments in Undeposited Funds are missing a deposit.</td></tr>
-                  ) : shownRows?.map((r, i) => (
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={INVOICE_COLUMNS.length + PAYMENT_COLUMNS.length + 2}>No payments in Undeposited Funds are missing a deposit.</td></tr>
+                  ) : shownRows?.map((r, i) => {
+                    const depositId = proposedDeposit(r.paymentId)
+                    return (
                     <tr key={`${r.paymentId}-${r.id}-${r.linkId}-${i}`} className="border-t">
-                      <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{i + 1}</td>
-                      {invoiceGroups.map(group => <GroupCells key={group} group={group} row={r} />)}
+                      <td className="sticky left-0 z-10 w-0 px-2 py-1.5 whitespace-nowrap border-r" style={depositCell}>
+                        <select
+                          className="h-8 w-[9.5rem] rounded-md border bg-background px-1.5 text-xs"
+                          value={(openDeposits ?? []).some(deposit => deposit.id === depositId) ? depositId : ""}
+                          onChange={e => setChosenDeposit(current => ({ ...current, [r.paymentId]: e.target.value }))}
+                          disabled={openDeposits == null}
+                          data-testid={`select-proposed-deposit-${r.paymentId}`}
+                        >
+                          <option value="">—</option>
+                          {(openDeposits ?? []).map(deposit => (
+                            <option key={deposit.id} value={deposit.id}>{deposit.id}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums bg-white">{i + 1}</td>
+                      <GroupCells group="invoice" row={r} />
+                      <GroupCells group="payment" row={r} />
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -763,6 +826,7 @@ export default function AnalysisPage() {
             <table className="text-xs w-full">
               <thead>
                 <tr>
+                  <th rowSpan={2} className="w-0 px-2 py-2 whitespace-nowrap text-left" style={depositHead}>Charge account</th>
                   <th colSpan={5} className="text-left px-3 py-2 whitespace-nowrap" style={paymentHead}>Proposed Payment Update</th>
                   <th colSpan={8} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>Proposed Updated Deposit</th>
                 </tr>
@@ -773,23 +837,64 @@ export default function AnalysisPage() {
                 </tr>
               </thead>
               <tbody>
-                {proposals.map(fix => (
-                  <tr key={fix.paymentId} className="border-t">
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.proposedAccount}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.totalAmt}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.totalAmt}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRef}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRefName}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.lineAmount}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnId}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnType}</td>
-                  </tr>
-                ))}
+                {proposals.map(fix => {
+                  const chargeAccount = chargeAccounts[fix.paymentId] || BANK_CHARGES_ACCOUNT
+                  const chargeName = accounts.find(account => account.id === chargeAccount)?.name ?? (chargeAccount === BANK_CHARGES_ACCOUNT ? "Bank Charges" : chargeAccount)
+                  const feeNumber = Number(fix.feeAmount.replace(/[^0-9.-]/g, ""))
+                  return (
+                    <Fragment key={fix.paymentId}>
+                      <tr key={fix.paymentId} className="border-t">
+                        <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={depositCell} />
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.proposedAccount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.totalAmt}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.depositTotal || fix.totalAmt}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRef}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRefName}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.lineAmount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnType}</td>
+                      </tr>
+                      {fix.feeAmount && (
+                        <tr className="border-t">
+                          <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={depositCell}>
+                            <select
+                              className="h-8 w-[11rem] rounded-md border bg-background px-1.5 text-xs"
+                              value={accounts.some(account => account.id === chargeAccount) ? chargeAccount : BANK_CHARGES_ACCOUNT}
+                              onChange={e => setChargeAccounts(current => ({ ...current, [fix.paymentId]: e.target.value }))}
+                              data-testid={`select-charge-account-${fix.paymentId}`}
+                            >
+                              {accounts.length === 0 && <option value={BANK_CHARGES_ACCOUNT}>Bank Charges</option>}
+                              {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{chargeAccount}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.feeAmount}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.depositTotal}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{chargeAccount}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{chargeName}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{Number.isFinite(feeNumber) ? formatCurrency(-Math.abs(feeNumber)) : fix.feeAmount}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell} />
+                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>Bank Charges</td>
+                        </tr>
+                      )}
+                      {fix.feeError && (
+                        <tr className="border-t">
+                          <td colSpan={14} className="px-3 py-1.5 text-rose-600">{fix.feeError}</td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>
