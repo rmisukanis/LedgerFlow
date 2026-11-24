@@ -836,66 +836,69 @@ export default function AnalysisPage() {
                   ))}
                 </tr>
               </thead>
-              <tbody>
-                {proposals.map(fix => {
-                  const chargeAccount = chargeAccounts[fix.paymentId] || BANK_CHARGES_ACCOUNT
-                  const chargeName = accounts.find(account => account.id === chargeAccount)?.name ?? (chargeAccount === BANK_CHARGES_ACCOUNT ? "Bank Charges" : chargeAccount)
-                  const feeNumber = Number(fix.feeAmount.replace(/[^0-9.-]/g, ""))
-                  return (
-                    <Fragment key={fix.paymentId}>
-                      <tr key={fix.paymentId} className="border-t">
-                        <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={depositCell} />
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.proposedAccount}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.totalAmt}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.depositTotal || fix.totalAmt}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRef}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositToAccountRefName}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.lineAmount}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnId}</td>
-                        <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.linkedTxnType}</td>
+              {proposals.map(fix => {
+                const chargeAccount = chargeAccounts[fix.paymentId] || BANK_CHARGES_ACCOUNT
+                const chargeName = accounts.find(account => account.id === chargeAccount)?.name ?? (chargeAccount === BANK_CHARGES_ACCOUNT ? "Bank Charges" : chargeAccount)
+                const feeNumber = Number(fix.feeAmount.replace(/[^0-9.-]/g, ""))
+                const grouped = Boolean(fix.feeAmount || fix.feeError)
+                const edge = (edgeName: "top" | "bottom" | "left" | "right") => grouped ? { [`border${edgeName[0].toUpperCase()}${edgeName.slice(1)}`]: "2px solid #D1D5DB" } : {}
+                return (
+                  <Fragment key={fix.paymentId}>
+                  <tbody data-testid={`proposal-group-${fix.paymentId}`}>
+                    <tr>
+                      <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top"), ...edge("left") }} />
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...paymentCell, ...edge("top") }}>{fix.originalAccount}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...paymentCell, ...edge("top") }}>{fix.proposedAccount}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={{ ...paymentCell, ...edge("top") }}>{fix.totalAmt}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...paymentCell, ...edge("top") }}>{fix.paymentId}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...paymentCell, ...edge("top") }}>{fix.txnDate}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top") }}>{fix.depositId}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top") }}>{fix.txnDate}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={{ ...depositCell, ...edge("top") }}>{fix.depositTotal || fix.totalAmt}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top") }}>{fix.depositToAccountRef}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top") }}>{fix.depositToAccountRefName}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={{ ...depositCell, ...edge("top") }}>{fix.lineAmount}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top") }}>{fix.linkedTxnId}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("top"), ...edge("right"), ...(!fix.feeAmount && !fix.feeError ? edge("bottom") : {}) }}>{fix.linkedTxnType}</td>
+                    </tr>
+                    {fix.feeAmount && (
+                      <tr>
+                        <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("left"), ...edge("bottom") }}>
+                          <select
+                            className="h-8 w-[11rem] rounded-md border bg-background px-1.5 text-xs"
+                            value={accounts.some(account => account.id === chargeAccount) ? chargeAccount : BANK_CHARGES_ACCOUNT}
+                            onChange={e => setChargeAccounts(current => ({ ...current, [fix.paymentId]: e.target.value }))}
+                            data-testid={`select-charge-account-${fix.paymentId}`}
+                          >
+                            {accounts.length === 0 && <option value={BANK_CHARGES_ACCOUNT}>Bank Charges</option>}
+                            {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-3 py-1.5" style={edge("bottom")} />
+                        <td className="px-3 py-1.5" style={edge("bottom")} />
+                        <td className="px-3 py-1.5" style={edge("bottom")} />
+                        <td className="px-3 py-1.5" style={edge("bottom")} />
+                        <td className="px-3 py-1.5" style={edge("bottom")} />
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom") }}>{fix.depositId}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom") }}>{fix.txnDate}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={{ ...depositCell, ...edge("bottom") }}>{fix.depositTotal}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom") }}>{chargeAccount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom") }}>{chargeName}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={{ ...depositCell, ...edge("bottom") }}>{Number.isFinite(feeNumber) ? formatCurrency(-Math.abs(feeNumber)) : fix.feeAmount}</td>
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom") }} />
+                        <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...depositCell, ...edge("bottom"), ...edge("right") }}>Bank Charges</td>
                       </tr>
-                      {fix.feeAmount && (
-                        <tr className="border-t">
-                          <td className="w-0 px-2 py-1.5 whitespace-nowrap" style={depositCell}>
-                            <select
-                              className="h-8 w-[11rem] rounded-md border bg-background px-1.5 text-xs"
-                              value={accounts.some(account => account.id === chargeAccount) ? chargeAccount : BANK_CHARGES_ACCOUNT}
-                              onChange={e => setChargeAccounts(current => ({ ...current, [fix.paymentId]: e.target.value }))}
-                              data-testid={`select-charge-account-${fix.paymentId}`}
-                            >
-                              {accounts.length === 0 && <option value={BANK_CHARGES_ACCOUNT}>Bank Charges</option>}
-                              {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
-                            </select>
-                          </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.originalAccount}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{chargeAccount}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={paymentCell}>{fix.feeAmount}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.paymentId}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={paymentCell}>{fix.txnDate}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.depositId}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{fix.txnDate}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{fix.depositTotal}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{chargeAccount}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{chargeName}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={depositCell}>{Number.isFinite(feeNumber) ? formatCurrency(-Math.abs(feeNumber)) : fix.feeAmount}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell} />
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>Bank Charges</td>
-                        </tr>
-                      )}
-                      {fix.feeError && (
-                        <tr className="border-t">
-                          <td colSpan={14} className="px-3 py-1.5 text-rose-600">{fix.feeError}</td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
+                    )}
+                    {fix.feeError && (
+                      <tr>
+                        <td colSpan={14} className="px-3 py-1.5 text-rose-600" style={{ ...edge("bottom"), ...edge("left"), ...edge("right") }}>{fix.feeError}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {grouped && <tbody aria-hidden="true"><tr><td colSpan={14} className="h-3 border-0 p-0" /></tr></tbody>}
+                  </Fragment>
+                )
+              })}
             </table>
           </div>
         </Card>

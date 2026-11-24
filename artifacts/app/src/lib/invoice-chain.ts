@@ -49,6 +49,7 @@ export interface ReviewRow {
   depositLineLinkedTxnId: string
   depositLineLinkedTxnType: string
   depositCleared: string
+  invoiceLineAmounts: number[]
 }
 
 interface Link { id: string; type: string }
@@ -93,7 +94,20 @@ function firstLinkedTxn(txn: Record<string, unknown>) {
 
 const emptyPayment = { paymentId: "", paymentTxnDate: "", paymentTotal: "", depositAccount: "", paymentLinkId: ""
   , paymentLinkType: "", depositId: "", depositTxnDate: "", depositTotal: "", depositToAccountRefValue: ""
-  , depositToAccountRefName: "", depositLineAmount: "", depositLineLinkedTxnId: "", depositLineLinkedTxnType: "", depositCleared: "" }
+  , depositToAccountRefName: "", depositLineAmount: "", depositLineLinkedTxnId: "", depositLineLinkedTxnType: "", depositCleared: "", invoiceLineAmounts: [] as number[] }
+
+export function invoiceSalesAmounts(invoice: Record<string, unknown> | undefined): number[] {
+  if (!invoice) return []
+  const amounts: number[] = []
+  for (const line of Array.isArray(invoice.Line) ? invoice.Line : []) {
+    const row = line as { Amount?: number; DetailType?: string }
+    const detail = String(row.DetailType ?? "")
+    if (detail === "SubTotalLineDetail" || detail === "DiscountLineDetail" || detail === "TaxLineDetail" || detail === "DescriptionOnly") continue
+    const amount = Math.round(Number(row.Amount ?? Number.NaN) * 100) / 100
+    if (!Number.isNaN(amount)) amounts.push(amount)
+  }
+  return amounts
+}
 
 export function paymentIdsOf(invoices: Record<string, unknown>[]) {
   return [...new Set(invoices.flatMap(invoice => linksOf(invoice).filter(link => isPayment(link.type) && link.id).map(link => link.id)))]
@@ -181,6 +195,7 @@ export function reviewRows(invoices: Record<string, unknown>[], payments: Map<st
       customerId: String(customer.value ?? ""),
       customerName: String(customer.name ?? ""),
       total: formatCurrency(Number(invoice.TotalAmt ?? 0)),
+      invoiceLineAmounts: invoiceSalesAmounts(invoice),
     }
     const links = linksOf(invoice)
     const invoiceLinks = links.length === 0 ? [{ id: "", type: "" }] : links

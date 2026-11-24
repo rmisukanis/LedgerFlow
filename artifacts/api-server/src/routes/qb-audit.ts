@@ -295,6 +295,61 @@ function moneyCents(value: unknown) {
   return Number.isFinite(amount) ? Math.round(amount * 100) : Number.NaN;
 }
 
+interface StoredDepositLine {
+  amountTotal: string | null
+  amountFee: string | null
+  amountNet: string | null
+}
+
+function storedSubsets(lines: StoredDepositLine[], targetCents: number) {
+  const found: StoredDepositLine[][] = [];
+  const chosen: StoredDepositLine[] = [];
+  const walk = (start: number, sum: number) => {
+    if (found.length > 12) return;
+    if (sum === targetCents && chosen.length > 0) {
+      found.push(chosen.slice());
+      return;
+    }
+    if (sum > targetCents) return;
+    for (let index = start; index < lines.length; index++) {
+      const amount = moneyCents(lines[index].amountTotal);
+      if (!Number.isFinite(amount)) continue;
+      chosen.push(lines[index]);
+      walk(index + 1, sum + amount);
+      chosen.pop();
+    }
+  };
+  if (Number.isFinite(targetCents)) walk(0, 0);
+  return found;
+}
+
+function assignStoredLines(payments: { paymentId: string; amount: number }[], lines: StoredDepositLine[]) {
+  const remaining = lines.slice();
+  const assigned = new Map<string, StoredDepositLine[]>();
+  const pending = payments.slice();
+  let moved = true;
+  while (moved && pending.length > 0) {
+    moved = false;
+    for (let index = 0; index < pending.length;) {
+      const subsets = storedSubsets(remaining, moneyCents(pending[index].amount));
+      const smallest = Math.min(...subsets.map(set => set.length));
+      const tight = subsets.filter(set => set.length === smallest);
+      if (tight.length !== 1) {
+        index += 1;
+        continue;
+      }
+      assigned.set(pending[index].paymentId, tight[0]);
+      const used = new Set(tight[0]);
+      for (let lineIndex = remaining.length - 1; lineIndex >= 0; lineIndex--) {
+        if (used.has(remaining[lineIndex])) remaining.splice(lineIndex, 1);
+      }
+      pending.splice(index, 1);
+      moved = true;
+    }
+  }
+  return assigned;
+}
+
 // Links each undeposited payment to the deposit already chosen for it, then stores both records.
 // A payment that does not equal its deposit amount needs a stored amount_fee. That fee is a deposit line to the chosen charge account.
 router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
@@ -343,36 +398,48 @@ router.post("/qb/audit/submit-link", async (req, res): Promise<void> => {
   try {
     for (const [depositId, group] of grouped) {
       const prepared: { paymentId: string; payment: Record<string, unknown>; amount: number; fee: number; feeAccountId: string }[] = []
+      const loaded: { fix: typeof group[number]; payment: Record<string, unknown>; amount: number }[] = []
       for (const fix of group) {
         const paymentBody = await qbRequest(`/payment/${fix.paymentId}`, "GET");
         const payment = recordOf(paymentBody, "Payment");
         const amount = Number(payment.TotalAmt ?? 0);
         if (!Number.isFinite(amount) || amount === 0) throw new Error(`Payment ${fix.paymentId} has no amount.`);
-        const stored = await db.select({
-          amountTotal: outsideDepositTransactionsTable.amountTotal,
-          amountFee: outsideDepositTransactionsTable.amountFee,
-          amountNet: outsideDepositTransactionsTable.amountNet,
-        }).from(outsideDepositTransactionsTable).where(eq(outsideDepositTransactionsTable.depositId, depositId));
-        const match = stored.find(row => moneyCents(row.amountTotal) === moneyCents(amount));
-        const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
-        const deposit = recordOf(depositBody, "Deposit");
-        const depositAmount = match?.amountNet != null && match.amountNet !== "" ? Number(match.amountNet) : Number(deposit.TotalAmt ?? 0);
-        const difference = moneyCents(amount) - moneyCents(depositAmount);
-        let fee = 0;
-        if (difference !== 0) {
-          if (match?.amountFee == null || match.amountFee === "") {
-            throw new Error(`Payment ${fix.paymentId} is ${amount.toFixed(2)} and the deposit amount is ${depositAmount.toFixed(2)}. No amount_fee is stored. Nothing was saved.`);
-          }
-          fee = Math.abs(Number(match.amountFee));
-          if (moneyCents(fee) !== Math.abs(difference)) {
-            throw new Error(`Payment ${fix.paymentId} is ${amount.toFixed(2)} and the deposit amount is ${depositAmount.toFixed(2)}. The stored amount_fee is ${fee.toFixed(2)}. Nothing was saved.`);
-          }
-          if (!fix.feeAccountId) throw new Error(`Choose the charge account for payment ${fix.paymentId}. Nothing was saved.`);
-        }
-        prepared.push({ paymentId: fix.paymentId, payment, amount, fee, feeAccountId: difference === 0 ? "" : (fix.feeAccountId || BANK_CHARGES) });
+        loaded.push({ fix, payment, amount });
       }
+      const stored = await db.select({
+        amountTotal: outsideDepositTransactionsTable.amountTotal,
+        amountFee: outsideDepositTransactionsTable.amountFee,
+        amountNet: outsideDepositTransactionsTable.amountNet,
+      }).from(outsideDepositTransactionsTable).where(eq(outsideDepositTransactionsTable.depositId, depositId));
+      const assigned = assignStoredLines(loaded.map(item => ({ paymentId: item.fix.paymentId, amount: item.amount })), stored);
       const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
       const deposit = recordOf(depositBody, "Deposit");
+      for (const item of loaded) {
+        const saved = assigned.get(item.fix.paymentId) ?? [];
+        if (saved.length === 0) {
+          throw new Error(`Payment ${item.fix.paymentId} is ${item.amount.toFixed(2)} and no saved lines total that amount. No amount_fee is stored. Nothing was saved.`);
+        }
+        const singleWithoutNet = saved.length === 1 && (saved[0].amountNet == null || saved[0].amountNet === "");
+        const depositAmount = singleWithoutNet
+          ? Number(deposit.TotalAmt ?? 0)
+          : saved.reduce((sum, line) => sum + Number(line.amountNet), 0);
+        if (!Number.isFinite(depositAmount)) {
+          throw new Error(`Payment ${item.fix.paymentId} is ${item.amount.toFixed(2)}. A saved line has no amount_net. Nothing was saved.`);
+        }
+        const difference = moneyCents(item.amount) - moneyCents(depositAmount);
+        let fee = 0;
+        if (difference !== 0) {
+          if (saved.some(line => line.amountFee == null || line.amountFee === "")) {
+            throw new Error(`Payment ${item.fix.paymentId} is ${item.amount.toFixed(2)} and the deposit lines total ${depositAmount.toFixed(2)}. No amount_fee is stored. Nothing was saved.`);
+          }
+          fee = Math.abs(saved.reduce((sum, line) => sum + Number(line.amountFee), 0));
+          if (moneyCents(fee) !== Math.abs(difference)) {
+            throw new Error(`Payment ${item.fix.paymentId} is ${item.amount.toFixed(2)} and the deposit lines total ${depositAmount.toFixed(2)}. The stored amount_fee is ${fee.toFixed(2)}. Nothing was saved.`);
+          }
+          if (!item.fix.feeAccountId) throw new Error(`Choose the charge account for payment ${item.fix.paymentId}. Nothing was saved.`);
+        }
+        prepared.push({ paymentId: item.fix.paymentId, payment: item.payment, amount: item.amount, fee, feeAccountId: difference === 0 ? "" : (item.fix.feeAccountId || BANK_CHARGES) });
+      }
       const bank = deposit.DepositToAccountRef as { value?: string; name?: string } | undefined;
       const lines = prepared.flatMap(item => {
         const linked = { Amount: item.amount, LinkedTxn: [{ TxnId: item.paymentId, TxnType: "Payment", TxnLineId: "0" }] };
@@ -461,6 +528,53 @@ async function removeDocument(realmId: string, entity: string, qbId: string) {
   ));
 }
 
+function lineLinksPayment(line: unknown, paymentId: string) {
+  const links = Array.isArray((line as { LinkedTxn?: unknown }).LinkedTxn) ? (line as { LinkedTxn: { TxnId?: string; TxnType?: string }[] }).LinkedTxn : [];
+  return links.some(link => String(link.TxnId ?? "") === paymentId && String(link.TxnType ?? "").toLowerCase() === "payment");
+}
+
+function addedFeeLine(line: unknown) {
+  const detail = (line as { DepositLineDetail?: { AccountRef?: { value?: string } }; Description?: string; Amount?: number }).DepositLineDetail;
+  const description = String((line as { Description?: string }).Description ?? "");
+  const amount = Number((line as { Amount?: number }).Amount ?? 0);
+  return description === "Bank Charges" && String(detail?.AccountRef?.value ?? "") === BANK_CHARGES && amount < 0;
+}
+
+// Removes the payment link and the fee line from a deposit that already existed. The deposit stays in place.
+async function restoreLinkedDeposit(realmId: string, depositId: string, paymentId: string, memo: string) {
+  const depositBody = await qbRequest(`/deposit/${depositId}`, "GET");
+  const deposit = (depositBody.Deposit ?? depositBody) as Record<string, unknown>;
+  if (!deposit.Id) throw new Error(`Deposit ${depositId} was not found.`);
+  const lines = Array.isArray(deposit.Line) ? deposit.Line : [];
+  const removedFee = lines.some(addedFeeLine);
+  const kept = lines.filter(line => !lineLinksPayment(line, paymentId) && !addedFeeLine(line));
+  const total = Number(deposit.TotalAmt ?? 0);
+  const keptTotal = kept.reduce((sum, line) => sum + Number((line as { Amount?: number }).Amount ?? 0), 0);
+  let nextLines = kept;
+  if (moneyCents(keptTotal) !== moneyCents(total)) {
+    if (!removedFee) throw new Error(`Deposit ${depositId} linked an existing deposit, and its original line is not stored, so Reverse will not delete it.`);
+    nextLines = [{
+      Amount: total,
+      Description: "VENMO CASHOUT",
+      DetailType: "DepositLineDetail",
+      DepositLineDetail: { AccountRef: { value: "52" } },
+    }];
+  }
+  const update: Record<string, unknown> = {
+    Id: depositId,
+    SyncToken: String(deposit.SyncToken ?? "0"),
+    TxnDate: String(deposit.TxnDate ?? ""),
+    PrivateNote: String(deposit.PrivateNote ?? "") === memo ? "" : String(deposit.PrivateNote ?? ""),
+    DepositToAccountRef: { value: String((deposit.DepositToAccountRef as { value?: string } | undefined)?.value ?? "") },
+    Line: nextLines,
+  };
+  if (deposit.CurrencyRef) update.CurrencyRef = deposit.CurrencyRef;
+  await qbRequest("/deposit", "POST", update);
+  const storedBody = await qbRequest(`/deposit/${depositId}`, "GET");
+  const stored = (storedBody.Deposit ?? storedBody) as Record<string, unknown>;
+  if (stored.Id) await saveDocument(realmId, "Deposit", stored);
+}
+
 // Deletes the deposit created by a saved fix and puts the payment back on its original bank account.
 router.post("/qb/audit/reverse", async (req, res): Promise<void> => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id)) : null;
@@ -488,8 +602,18 @@ router.post("/qb/audit/reverse", async (req, res): Promise<void> => {
       return;
     }
     if (row.originalDepositAccount === row.updatedDepositAccount) {
-      res.status(reversed.length ? 200 : 400).json({ reversed, error: `Change ${id} linked an existing deposit, so Reverse will not delete it.` });
-      return;
+      try {
+        await restoreLinkedDeposit(token.realmId, row.depositId, row.paymentId, row.memo);
+        const paymentBody = await qbRequest(`/payment/${row.paymentId}`, "GET");
+        const payment = (paymentBody.Payment ?? paymentBody) as Record<string, unknown>;
+        if (payment.Id) await saveDocument(token.realmId, "Payment", payment);
+        await db.update(qbAuditTable).set({ reversedAt: new Date() }).where(eq(qbAuditTable.id, row.id));
+        reversed.push(row.id);
+      } catch (err) {
+        res.status(reversed.length ? 200 : 502).json({ reversed, error: err instanceof Error ? err.message : `Change ${id} could not be reversed.` });
+        return;
+      }
+      continue;
     }
     try {
       if (row.depositId) {

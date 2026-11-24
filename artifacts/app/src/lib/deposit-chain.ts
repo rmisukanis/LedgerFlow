@@ -1,10 +1,10 @@
-import { loadPayments, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
+import { invoiceSalesAmounts, loadPayments, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
 import { formatCurrency } from "@/lib/utils"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 
 interface Link { id: string; type: string; amount: string }
 
-const emptyInvoice = { id: "", docNumber: "", txnDate: "", linkId: "", linkType: "", customerId: "", customerName: "", total: "" }
+const emptyInvoice = { id: "", docNumber: "", txnDate: "", linkId: "", linkType: "", customerId: "", customerName: "", total: "", invoiceLineAmounts: [] as number[] }
 const emptyPayment = { paymentId: "", paymentTxnDate: "", paymentTotal: "", depositAccount: "", paymentLinkId: "", paymentLinkType: "" }
 
 function linksOf(txn: Record<string, unknown>, type: string): Link[] {
@@ -67,7 +67,7 @@ export async function loadDepositPayments(ids: string[]) {
   return loadPayments(ids)
 }
 
-function invoiceFields(invoice: Record<string, unknown> | undefined, paymentId: string): Pick<ReviewRow, "id" | "docNumber" | "txnDate" | "linkId" | "linkType" | "customerId" | "customerName" | "total"> {
+function invoiceFields(invoice: Record<string, unknown> | undefined, paymentId: string): Pick<ReviewRow, "id" | "docNumber" | "txnDate" | "linkId" | "linkType" | "customerId" | "customerName" | "total" | "invoiceLineAmounts"> {
   if (!invoice) return emptyInvoice
   const customer = (invoice.CustomerRef as { value?: string; name?: string } | undefined) ?? {}
   const backLink = linksOf(invoice, "Payment").find(link => link.id === paymentId) ?? linksOf(invoice, "Payment")[0]
@@ -80,6 +80,7 @@ function invoiceFields(invoice: Record<string, unknown> | undefined, paymentId: 
     customerId: String(customer.value ?? ""),
     customerName: String(customer.name ?? ""),
     total: formatCurrency(Number(invoice.TotalAmt ?? 0)),
+    invoiceLineAmounts: invoiceSalesAmounts(invoice),
   }
 }
 

@@ -222,6 +222,11 @@ export interface DepositLineSuggestion {
 
 interface AwaitingPayment extends UndepositedPayment {
   invoiceTotal: number
+  invoiceLineAmounts: number[]
+}
+
+function amountBag(values: number[]) {
+  return values.map(value => Math.round(Math.abs(value) * 100)).sort((left, right) => left - right).join(",")
 }
 
 function dayOf(value: string) {
@@ -250,6 +255,7 @@ export function invoicePaymentsAwaitingDeposit(rows: ReviewRow[]): AwaitingPayme
       customerName: row.customerName,
       depositAccount: row.depositAccount,
       invoiceTotal: money(row.total),
+      invoiceLineAmounts: row.invoiceLineAmounts,
     })
   }
   return payments
@@ -288,7 +294,21 @@ export function depositLineSuggestions(deposits: UnlinkedDeposit[], lines: Outsi
       const suggestion = whole.get(deposit.id)
       return [{ deposit, outside: null, payment: suggestion?.payment ?? null, reason: suggestion?.reason ?? "No payment has this date and total.", likelihood: suggestion?.likelihood ?? null }]
     }
-    return matched.map(outside => ({ deposit, outside, ...claim(outside) }))
+    const rows = matched.map(outside => ({ deposit, outside, ...claim(outside) }))
+    const open = rows.filter(row => row.outside && !row.payment)
+    if (open.length < 2) return rows
+    const amounts = open.map(row => row.outside?.amountTotal ?? Number.NaN)
+    const sum = Math.round(amounts.reduce((total, amount) => total + amount, 0) * 100) / 100
+    const hits = awaiting.filter(payment => !used.has(payment.paymentId) && sameMoney(sum, payment.total) && amountBag(payment.invoiceLineAmounts) === amountBag(amounts))
+    if (hits.length !== 1) return rows
+    const chosen = hits[0]
+    used.add(chosen.paymentId)
+    const grouped = {
+      payment: chosen,
+      reason: "These lines total the payment, and each amount matches an invoice line.",
+      likelihood: 85,
+    }
+    return rows.map(row => row.payment ? row : { ...row, ...grouped })
   })
 }
 
@@ -347,46 +367,112 @@ function parsedMoney(value: string) {
   return Number.isFinite(amount) ? amount : Number.NaN
 }
 
-// Links each chosen deposit to its payment. A difference has to be the saved amount_fee.
+function lineSubsets(lines: OutsideDepositLine[], target: number) {
+  const targetCents = cents(target)
+  const found: OutsideDepositLine[][] = []
+  const chosen: OutsideDepositLine[] = []
+  const walk = (start: number, sum: number) => {
+    if (found.length > 12) return
+    if (sum === targetCents && chosen.length > 0) {
+      found.push(chosen.slice())
+      return
+    }
+    if (sum > targetCents) return
+    for (let index = start; index < lines.length; index++) {
+      const amount = cents(lines[index].amountTotal)
+      if (!Number.isFinite(amount)) continue
+      chosen.push(lines[index])
+      walk(index + 1, sum + amount)
+      chosen.pop()
+    }
+  }
+  if (Number.isFinite(targetCents)) walk(0, 0)
+  return found
+}
+
+// One saved line can equal a payment. Otherwise the lines whose amounts add up to that payment belong to it, and their fees add up too.
+function assignDepositLines(payments: { paymentId: string; amount: number }[], lines: OutsideDepositLine[]) {
+  const remaining = lines.slice()
+  const assigned = new Map<string, OutsideDepositLine[]>()
+  const pending = payments.slice()
+  let moved = true
+  while (moved && pending.length > 0) {
+    moved = false
+    for (let index = 0; index < pending.length;) {
+      const subsets = lineSubsets(remaining, pending[index].amount)
+      const smallest = Math.min(...subsets.map(set => set.length))
+      const tight = subsets.filter(set => set.length === smallest)
+      if (tight.length !== 1) {
+        index += 1
+        continue
+      }
+      assigned.set(pending[index].paymentId, tight[0])
+      const used = new Set(tight[0])
+      for (let lineIndex = remaining.length - 1; lineIndex >= 0; lineIndex--) {
+        if (used.has(remaining[lineIndex])) remaining.splice(lineIndex, 1)
+      }
+      pending.splice(index, 1)
+      moved = true
+    }
+  }
+  return assigned
+}
+
+function feeForLines(paymentId: string, payment: number, saved: OutsideDepositLine[], depositTotal: number) {
+  if (saved.length === 0) {
+    return { feeAmount: "", feeError: `Payment ${paymentId} is ${formatCurrency(payment)} and no saved lines total that amount. No amount_fee is stored, so this proposal cannot be submitted.` }
+  }
+  const singleWithoutNet = saved.length === 1 && saved[0].amountNet == null
+  const portion = singleWithoutNet ? depositTotal : saved.reduce((sum, line) => sum + (line.amountNet ?? Number.NaN), 0)
+  if (!Number.isFinite(portion)) {
+    return { feeAmount: "", feeError: `Payment ${paymentId} is ${formatCurrency(payment)}. A saved line has no amount_net, so this proposal cannot be submitted.` }
+  }
+  const difference = cents(payment) - cents(portion)
+  if (difference === 0) return { feeAmount: "", feeError: "" }
+  const fee = saved.reduce((sum, line) => sum + (line.amountFee ?? 0), 0)
+  if (saved.some(line => line.amountFee == null)) {
+    return { feeAmount: "", feeError: `Payment ${paymentId} is ${formatCurrency(payment)} and the deposit lines total ${formatCurrency(portion)}. No amount_fee is stored, so this proposal cannot be submitted.` }
+  }
+  if (cents(fee) !== Math.abs(difference)) {
+    return { feeAmount: "", feeError: `Payment ${paymentId} is ${formatCurrency(payment)} and the deposit lines total ${formatCurrency(portion)}. The stored amount_fee is ${formatCurrency(fee)}, so this proposal cannot be submitted.` }
+  }
+  return { feeAmount: formatCurrency(fee), feeError: "" }
+}
+
+// Links each chosen deposit to its payment. A difference has to be the saved amount_fee, summed when several lines make the payment.
 export function proposeChosenDeposits(rows: ReviewRow[], choices: { paymentId: string; depositId: string }[], deposits: UnlinkedDeposit[], lines: OutsideDepositLine[]): ProposedFix[] {
   const byPayment = new Map<string, ReviewRow>()
   for (const row of rows) if (row.paymentId && !byPayment.has(row.paymentId)) byPayment.set(row.paymentId, row)
   const byDeposit = new Map(deposits.map(deposit => [deposit.id, deposit]))
-  const fixes: ProposedFix[] = []
-  for (const choice of choices) {
+  const ready = choices.flatMap(choice => {
     const row = byPayment.get(choice.paymentId)
     const deposit = byDeposit.get(choice.depositId)
-    if (!row || !deposit) continue
-    const payment = parsedMoney(row.paymentTotal)
-    const saved = lines.filter(line => line.depositId === deposit.id && cents(line.amountTotal) === cents(payment))
-    const line = saved.find(item => item.amountFee != null) ?? saved[0]
-    const depositAmount = line?.amountNet ?? deposit.total
-    const difference = cents(payment) - cents(depositAmount)
-    let feeAmount = ""
-    let feeError = ""
-    if (difference !== 0) {
-      const fee = line?.amountFee
-      if (fee == null) {
-        feeError = `Payment ${row.paymentId} is ${formatCurrency(payment)} and the deposit amount is ${formatCurrency(depositAmount)}. No amount_fee is stored, so this proposal cannot be submitted.`
-      } else if (cents(fee) !== Math.abs(difference)) {
-        feeError = `Payment ${row.paymentId} is ${formatCurrency(payment)} and the deposit amount is ${formatCurrency(depositAmount)}. The stored amount_fee is ${formatCurrency(fee)}, so this proposal cannot be submitted.`
-      } else {
-        feeAmount = formatCurrency(fee)
-      }
-    }
+    if (!row || !deposit) return []
+    return [{ choice, row, deposit, payment: parsedMoney(row.paymentTotal) }]
+  })
+  const assigned = new Map<string, OutsideDepositLine[]>()
+  const depositIds = [...new Set(ready.map(item => item.deposit.id))]
+  for (const depositId of depositIds) {
+    const group = ready.filter(item => item.deposit.id === depositId)
+    const saved = assignDepositLines(group.map(item => ({ paymentId: item.choice.paymentId, amount: item.payment })), lines.filter(line => line.depositId === depositId))
+    for (const [paymentId, savedLines] of saved) assigned.set(paymentId, savedLines)
+  }
+  const fixes: ProposedFix[] = []
+  for (const item of ready) {
+    const { feeAmount, feeError } = feeForLines(item.row.paymentId, item.payment, assigned.get(item.choice.paymentId) ?? [], item.deposit.total)
     fixes.push({
-      paymentId: row.paymentId,
-      txnDate: row.paymentTxnDate,
-      totalAmt: row.paymentTotal,
-      originalAccount: row.depositAccount,
+      paymentId: item.row.paymentId,
+      txnDate: item.row.paymentTxnDate,
+      totalAmt: item.row.paymentTotal,
+      originalAccount: item.row.depositAccount,
       proposedAccount: UNDEPOSITED_FUNDS,
-      depositToAccountRef: deposit.accountId,
-      depositToAccountRefName: deposit.accountName,
-      lineAmount: row.paymentTotal,
-      linkedTxnId: row.paymentId,
+      depositToAccountRef: item.deposit.accountId,
+      depositToAccountRefName: item.deposit.accountName,
+      lineAmount: item.row.paymentTotal,
+      linkedTxnId: item.row.paymentId,
       linkedTxnType: "Payment",
-      depositId: deposit.id,
-      depositTotal: formatCurrency(deposit.total),
+      depositId: item.deposit.id,
+      depositTotal: formatCurrency(item.deposit.total),
       feeAmount,
       feeError,
     })
