@@ -49,10 +49,12 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
       ...common,
     ],
     lineFields: [
+      { name: "Line.UnitPrice", kind: "number" },
+      { name: "Line.Qty", kind: "number" },
       { name: "Line.Amount", kind: "number", required: true },
+      { name: "Line.Description", kind: "text" },
       { name: "Line.AccountRef", kind: "ref", required: true, hint: "Expense account Id" },
       { name: "Line.CustomerRef", kind: "ref", hint: "Customer Id — required when the account is Accounts Receivable" },
-      { name: "Line.Description", kind: "text" },
     ],
   },
   Purchase: {
@@ -69,10 +71,12 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
       { name: "ExchangeRate", kind: "number" },
     ],
     lineFields: [
+      { name: "Line.UnitPrice", kind: "number" },
+      { name: "Line.Qty", kind: "number" },
       { name: "Line.Amount", kind: "number", required: true },
+      { name: "Line.Description", kind: "text" },
       { name: "Line.AccountRef", kind: "ref", required: true, hint: "Expense account Id" },
       { name: "Line.CustomerRef", kind: "ref", hint: "Customer Id — required when the account is Accounts Receivable" },
-      { name: "Line.Description", kind: "text" },
     ],
   },
   Deposit: {
@@ -119,11 +123,11 @@ export const BATCH_SCHEMAS: Record<string, EntitySchema> = {
       ...common,
     ],
     lineFields: [
-      { name: "Line.Amount", kind: "number", required: true },
-      { name: "Line.ItemRef", kind: "ref", required: true, hint: "Item Id" },
-      { name: "Line.Qty", kind: "number" },
       { name: "Line.UnitPrice", kind: "number" },
+      { name: "Line.Qty", kind: "number" },
+      { name: "Line.Amount", kind: "number", required: true },
       { name: "Line.Description", kind: "text" },
+      { name: "Line.ItemRef", kind: "ref", required: true, hint: "Item Id" },
     ],
   },
   Customer: {

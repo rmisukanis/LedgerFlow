@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { BATCH_SCHEMAS, type BatchField } from "@/data/batch-schemas"
 
 const API = `${import.meta.env.BASE_URL}api/qb/explorer/run`
@@ -98,6 +99,8 @@ function buildLine(entity: string, row: Record<string, string>): Obj | null {
     line.DetailType = "AccountBasedExpenseLineDetail"
     const d: Obj = { AccountRef: { value: get("Line.AccountRef") } }
     if (get("Line.CustomerRef")) d.CustomerRef = { value: get("Line.CustomerRef") }
+    if (get("Line.Qty")) d.Qty = num("Line.Qty")
+    if (get("Line.UnitPrice")) d.UnitPrice = num("Line.UnitPrice")
     line.AccountBasedExpenseLineDetail = d
   } else {
     line.DetailType = "SalesItemLineDetail"
@@ -158,6 +161,237 @@ function describe(entity: string, o: Obj | undefined, bId: unknown): string {
   return `${entity} ${o.Id}${amt}${name ? ` — ${name}` : ""}`
 }
 
+type BatchAction = "Create" | "Update" | "Delete" | "Copy"
+const BATCH_ACTIONS: BatchAction[] = ["Create", "Update", "Delete", "Copy"]
+const SYSTEM_KEYS = new Set(["Id", "SyncToken", "MetaData", "domain", "sparse"])
+
+interface FieldRow { path: string; value: unknown }
+
+function flattenFields(value: unknown, path = ""): FieldRow[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return path ? [{ path, value }] : []
+    return value.flatMap((item, index) => flattenFields(item, `${path}[${index}]`))
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Obj)
+    if (entries.length === 0) return path ? [{ path, value }] : []
+    return entries.flatMap(([key, child]) => flattenFields(child, path ? `${path}.${key}` : key))
+  }
+  return path ? [{ path, value }] : []
+}
+
+function pathTokens(path: string): (string | number)[] {
+  const tokens: (string | number)[] = []
+  for (const part of path.split(".")) {
+    const re = /([^[\]]+)|\[(\d+)\]/g
+    let match: RegExpExecArray | null
+    while ((match = re.exec(part))) tokens.push(match[1] !== undefined ? match[1] : Number(match[2]))
+  }
+  return tokens
+}
+
+function setPath(root: Obj, path: string, value: unknown) {
+  const tokens = pathTokens(path)
+  let cursor: unknown = root
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const key = tokens[i]
+    const parent = cursor as Obj
+    const next = parent[key as keyof Obj]
+    if (next == null || typeof next !== "object") parent[key as keyof Obj] = {}
+    cursor = parent[key as keyof Obj]
+  }
+  const last = tokens[tokens.length - 1]
+  ;(cursor as Obj)[last as keyof Obj] = value
+}
+
+function coerce(original: unknown, raw: string): unknown {
+  if (typeof original === "number") {
+    const n = Number(raw.replace(/[$,\s]/g, ""))
+    if (Number.isNaN(n)) throw new Error("not a number")
+    return n
+  }
+  if (typeof original === "boolean") {
+    if (/^(true|1|yes)$/i.test(raw)) return true
+    if (/^(false|0|no)$/i.test(raw)) return false
+    throw new Error("must be true or false")
+  }
+  if (original !== null && typeof original === "object") {
+    try { return JSON.parse(raw) } catch { throw new Error("not valid JSON") }
+  }
+  if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
+    try { return JSON.parse(raw) } catch { /* a string that only looks like JSON stays a string */ }
+  }
+  return raw
+}
+
+function isMeasurePath(path: string): boolean {
+  return /(?:^|\.)(Qty|UnitPrice|Amount)$/.test(path)
+}
+
+function applyEdits(source: Obj, edits: Record<string, string>): { next: Obj; errors: string[]; touched: Set<string> } {
+  const next = JSON.parse(JSON.stringify(source)) as Obj
+  const errors: string[] = []
+  const touched = new Set<string>()
+  const known = new Map(flattenFields(source).map(row => [row.path, row.value]))
+  for (const [path, rawValue] of Object.entries(edits)) {
+    const raw = (rawValue ?? "").trim()
+    if (!raw) continue
+    touched.add(path.split(/[.[]/)[0] ?? path)
+    const original = known.has(path) ? known.get(path) : (isMeasurePath(path) ? 0 : "")
+    try { setPath(next, path, coerce(original, raw)) }
+    catch (e) { errors.push(`${path}: ${e instanceof Error ? e.message : "invalid value"}`) }
+  }
+  return { next, errors, touched }
+}
+
+function changedTopLevel(after: Obj, touched: Set<string>): Obj {
+  const patch: Obj = {}
+  for (const key of touched) {
+    if (key === "Id" || key === "SyncToken" || key === "sparse") continue
+    patch[key] = after[key]
+  }
+  return patch
+}
+
+function stripSystem(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripSystem)
+  if (value && typeof value === "object") {
+    const out: Obj = {}
+    for (const [key, child] of Object.entries(value as Obj)) {
+      if (SYSTEM_KEYS.has(key)) continue
+      out[key] = stripSystem(child)
+    }
+    return out
+  }
+  return value
+}
+
+function displayValue(value: unknown): string {
+  if (typeof value === "string") return value
+  if (value == null) return ""
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+// Billing and shipping address blocks are never shown or offered.
+const ADDRESS_BLOCKS = new Set(["BillAddr", "ShipAddr", "ShipFromAddr"])
+
+function isAddressPath(path: string): boolean {
+  return path.split(/[.[]/).some(part => ADDRESS_BLOCKS.has(part))
+}
+
+interface PartyFields { namePath?: string; idPath?: string; kind: "customer" | "vendor" }
+
+function partyFields(rows: FieldRow[], entity: string): PartyFields | undefined {
+  const paths = new Set(rows.map(row => row.path))
+  const pair = (name: string, id: string, kind: "customer" | "vendor"): PartyFields | undefined => {
+    if (!paths.has(name) && !paths.has(id)) return undefined
+    return { namePath: paths.has(name) ? name : undefined, idPath: paths.has(id) ? id : undefined, kind }
+  }
+  return pair("CustomerRef.name", "CustomerRef.value", "customer")
+    ?? pair("VendorRef.name", "VendorRef.value", "vendor")
+    ?? pair("EntityRef.name", "EntityRef.value", String(fieldAt(rows, "EntityRef.type") ?? "").toLowerCase() === "customer" ? "customer" : "vendor")
+    ?? (paths.has("DisplayName") ? { namePath: "DisplayName", idPath: paths.has("Id") ? "Id" : undefined, kind: entity === "Vendor" ? "vendor" : "customer" } : undefined)
+}
+
+function fieldAt(rows: FieldRow[], path: string): unknown {
+  return rows.find(row => row.path === path)?.value
+}
+
+function isTaxAmountPath(path: string): boolean {
+  return /TaxLine\[\d+\]\.Amount$/.test(path)
+}
+
+interface LineAmountRow { path: string; label: string; detail?: string }
+
+const SERVICE_DETAILS = new Set(["SalesItemLineDetail", "ItemBasedExpenseLineDetail", "AccountBasedExpenseLineDetail"])
+const LINE_ALWAYS = new Set(["Line.UnitPrice", "Line.Qty", "Line.Description"])
+
+function lineInputLabel(name: string): string {
+  if (name === "Line.UnitPrice") return "Unit price"
+  if (name === "Line.Qty") return "Quantity"
+  if (name === "Line.Amount") return "Amount"
+  if (name === "Line.Description") return "Description"
+  return name.replace("Line.", "")
+}
+
+function lineAmountRows(rows: FieldRow[]): LineAmountRow[] {
+  const indexes = [...new Set(rows.flatMap(row => {
+    const match = row.path.match(/^Line\[(\d+)\]\.Amount$/)
+    return match ? [Number(match[1])] : []
+  }))].sort((a, b) => a - b)
+  const out: LineAmountRow[] = []
+  let service = 0
+  for (const index of indexes) {
+    const detailType = String(fieldAt(rows, `Line[${index}].DetailType`) ?? "")
+    if (detailType === "TaxLineDetail") continue
+    const path = `Line[${index}].Amount`
+    if (detailType === "SubTotalLineDetail") {
+      out.push({ path, label: "SubTotalLineDetail" })
+      continue
+    }
+    service += 1
+    const description = fieldAt(rows, `Line[${index}].Description`)
+    const text = typeof description === "string" ? description.trim() : ""
+    if (detailType === "DepositLineDetail") {
+      out.push({ path, label: `Line ${service} amount` })
+      out.push({ path: `Line[${index}].Description`, label: `Line ${service} description` })
+      continue
+    }
+    if (SERVICE_DETAILS.has(detailType)) {
+      const prefix = `Line[${index}].${detailType}`
+      out.push({ path: `${prefix}.UnitPrice`, label: `Line ${service} unit price` })
+      out.push({ path: `${prefix}.Qty`, label: `Line ${service} qty` })
+      out.push({ path, label: `Line ${service} amount`, detail: text || undefined })
+    } else {
+      out.push({ path, label: `Line ${service}`, detail: text || undefined })
+    }
+  }
+  return out
+}
+
+function hiddenAmountPaths(rows: FieldRow[]): Set<string> {
+  const hidden = new Set(rows.filter(row => isTaxAmountPath(row.path)).map(row => row.path))
+  for (const row of rows) {
+    const match = row.path.match(/^Line\[(\d+)\]\.Amount$/)
+    if (!match) continue
+    if (String(fieldAt(rows, `Line[${match[1]}].DetailType`) ?? "") === "TaxLineDetail") hidden.add(row.path)
+  }
+  return hidden
+}
+
+function defaultFieldPaths(rows: FieldRow[], entity: string): string[] {
+  const chosen: string[] = []
+  const add = (path: string | undefined) => {
+    if (path && !chosen.includes(path) && !isAddressPath(path) && !isTaxAmountPath(path)) chosen.push(path)
+  }
+  const party = partyFields(rows, entity)
+  add(rows.find(row => row.path === "TxnDate")?.path)
+  add(rows.find(row => row.path === "TotalAmt")?.path)
+  add(party?.namePath)
+  add(party?.idPath)
+  for (const line of lineAmountRows(rows)) add(line.path)
+  return chosen
+}
+
+function fieldLabel(path: string, entity: string, rows: FieldRow[]): string {
+  if (path === "TxnDate") return "Date"
+  if (path === "TotalAmt") return "Total amount"
+  const line = lineAmountRows(rows).find(item => item.path === path)
+  if (line) return line.label
+  const party = partyFields(rows, entity)
+  const partyName = party?.kind === "vendor" ? "Vendor" : "Customer"
+  if (party?.namePath === path) return partyName
+  if (party?.idPath === path) return `${partyName} ID`
+  return path
+}
+
+function faultMessage(data: unknown): string | null {
+  const fault = (data as Obj | null)?.Fault as { Error?: { Message?: string; Detail?: string }[] } | undefined
+  if (!fault?.Error?.length) return null
+  return `${fault.Error[0]?.Message ?? "Request failed"} ${fault.Error[0]?.Detail ?? ""}`.trim()
+}
+
 export default function BatchBuilderPage() {
   const [entity, setEntity] = useState("Bill")
   const schema = BATCH_SCHEMAS[entity]
@@ -169,16 +403,59 @@ export default function BatchBuilderPage() {
   const [editingBid, setEditingBid] = useState<number | null>(null)
   const [checkedBids, setCheckedBids] = useState<number[]>([])
   const [sending, setSending] = useState(false)
+  const [action, setAction] = useState<BatchAction>("Create")
+  const [recordEntity, setRecordEntity] = useState("Bill")
+  const [recordId, setRecordId] = useState("")
+  const [loaded, setLoaded] = useState<Obj | null>(null)
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [extraFields, setExtraFields] = useState<string[]>([])
+  const [loadingRecord, setLoadingRecord] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionResult, setActionResult] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [lines, setLines] = useState<Record<string, string>[]>([])
   const [added, setAdded] = useState<Record<string, { header: Record<string, string>; lines: Record<string, string>[] }[]>>({})
   const [options, setOptions] = useState<Record<string, Opt[] | "loading" | "error">>({})
   const addedRows = added[entity] ?? []
 
+  const lineAlways = (name: string) =>
+    ((entity === "Bill" || entity === "Purchase" || entity === "Invoice") && LINE_ALWAYS.has(name))
+    || (entity === "Deposit" && name === "Line.Description")
   const selected = useMemo(
-    () => all.filter(f => f.required || picked.has(f.name)),
-    [all, picked],
+    () => all.filter(f => f.required || lineAlways(f.name) || picked.has(f.name)),
+    [all, picked, entity],
   )
+  const fieldRows = useMemo(() => (loaded ? flattenFields(loaded) : []), [loaded])
+  const visibleRows = useMemo(() => {
+    const lines = lineAmountRows(fieldRows)
+    const order = defaultFieldPaths(fieldRows, recordEntity)
+    const hidden = hiddenAmountPaths(fieldRows)
+    const allowed = new Set(fieldRows.filter(row => !isAddressPath(row.path) && !hidden.has(row.path)).map(row => row.path))
+    for (const path of extraFields) if (allowed.has(path) && !order.includes(path)) order.push(path)
+    const byPath = new Map(fieldRows.map(row => [row.path, row]))
+    const lineByPath = new Map(lines.map(line => [line.path, line]))
+    const party = partyFields(fieldRows, recordEntity)
+    return order.flatMap(path => {
+      const row = byPath.get(path)
+      const line = lineByPath.get(path)
+      if (!row && !line) return []
+      return [{
+        path,
+        value: row?.value ?? "",
+        label: line?.label ?? fieldLabel(path, recordEntity, fieldRows),
+        detail: line?.detail,
+        readOnly: party?.namePath === path,
+        inputType: path === "TxnDate" ? "date" as const : "text" as const,
+      }]
+    })
+  }, [fieldRows, extraFields, recordEntity])
+  const addableFields = useMemo(
+    () => fieldRows.filter(row => !isAddressPath(row.path) && !hiddenAmountPaths(fieldRows).has(row.path) && !visibleRows.some(shown => shown.path === row.path)),
+    [fieldRows, visibleRows],
+  )
+  const canEdit = action === "Update" || action === "Copy"
 
   useEffect(() => {
     for (const f of selected) {
@@ -234,7 +511,10 @@ export default function BatchBuilderPage() {
   const clearAdded = () => setAdded(a => ({ ...a, [entity]: [] }))
 
   const reset = () => { setRecords([]); setProblems([]); setResults(null); setEditingBid(null); setCheckedBids([]) }
+  const clearLoaded = () => { setLoaded(null); setEdits({}); setExtraFields([]); setActionError(null); setActionResult(null); setConfirmDelete(false) }
   const changeEntity = (e: string) => { setEntity(e); setPicked(new Set()); setDraft({}); setLines([]); reset() }
+  const changeRecordEntity = (e: string) => { setRecordEntity(e); setRecordId(""); clearLoaded() }
+  const onAction = (next: string) => { setAction(next as BatchAction); clearLoaded() }
   const toggle = (n: string) => {
     setPicked(p => { const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s })
     if (editingBid == null) reset()
@@ -439,13 +719,136 @@ export default function BatchBuilderPage() {
     }
   }
 
+  const runExplorer = async (request: { method: "GET" | "POST"; path: string; query: string; body: string }) => {
+    const res = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...request, contentType: request.method === "POST" ? "application/json" : "" }),
+    })
+    const payload = await res.json()
+    if (!res.ok) throw new Error(payload.error ?? "Request failed")
+    const fault = faultMessage(payload.data)
+    if (payload.status >= 300 || fault) throw new Error(fault ?? `Request failed (${payload.status})`)
+    return payload as { data?: Obj }
+  }
+
+  const loadRecord = async () => {
+    const id = recordId.trim()
+    if (!id) return
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+      setActionError("Id can only contain letters, numbers, _ and -")
+      setLoaded(null)
+      setExtraFields([])
+      return
+    }
+    setLoadingRecord(true)
+    setActionError(null)
+    setActionResult(null)
+    setLoaded(null)
+    setEdits({})
+    setExtraFields([])
+    try {
+      const payload = await runExplorer({ method: "GET", path: `/${recordEntity.toLowerCase()}/${id}`, query: "", body: "" })
+      const record = payload.data?.[recordEntity]
+      if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`No ${recordEntity} returned for that Id`)
+      setLoaded(record as Obj)
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Request failed")
+    } finally {
+      setLoadingRecord(false)
+    }
+  }
+
+  const postRecord = async (query: string, body: Obj, mode: "update" | "copy" | "delete") => {
+    setApplying(true)
+    setActionError(null)
+    setActionResult(null)
+    try {
+      const payload = await runExplorer({
+        method: "POST",
+        path: `/${recordEntity.toLowerCase()}`,
+        query,
+        body: JSON.stringify(body),
+      })
+      const record = payload.data?.[recordEntity]
+      const saved = record && typeof record === "object" && !Array.isArray(record) ? record as Obj : undefined
+      if (mode === "delete") {
+        setLoaded(null)
+        setEdits({})
+        setActionResult(`Deleted ${recordEntity} ${body.Id}`)
+      } else if (mode === "copy") {
+        setEdits({})
+        setActionResult(`Copied as ${describe(recordEntity, saved, saved?.Id ?? "new")}`)
+      } else {
+        if (saved) setLoaded(saved)
+        setEdits({})
+        setActionResult(`Updated ${describe(recordEntity, saved, saved?.Id ?? body.Id)}`)
+      }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Request failed")
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const applyRecord = async () => {
+    if (!loaded) return
+    const { next, errors, touched } = applyEdits(loaded, edits)
+    if (errors.length) {
+      setActionError(errors.join("; "))
+      return
+    }
+    if (action === "Copy") {
+      await postRecord("", stripSystem(next) as Obj, "copy")
+      return
+    }
+    const patch = changedTopLevel(next, touched)
+    const idChanged = String(next.Id ?? "") !== String(loaded.Id ?? "")
+    const tokenChanged = String(next.SyncToken ?? "") !== String(loaded.SyncToken ?? "")
+    if (Object.keys(patch).length === 0 && !idChanged && !tokenChanged) {
+      setActionError("Type a new value for at least one field. A blank cell does not change that field.")
+      return
+    }
+    // QuickBooks still requires the entity's required fields on a sparse update.
+    for (const field of BATCH_SCHEMAS[recordEntity]?.fields ?? []) {
+      if (field.required && next[field.name] !== undefined) patch[field.name] = next[field.name]
+    }
+    await postRecord("", {
+      ...patch,
+      sparse: true,
+      Id: String(next.Id ?? loaded.Id),
+      SyncToken: String(next.SyncToken ?? loaded.SyncToken ?? "0"),
+    }, "update")
+  }
+
+  const deleteRecord = async () => {
+    if (!loaded) return
+    await postRecord("operation=delete", {
+      Id: String(loaded.Id),
+      SyncToken: String(loaded.SyncToken ?? "0"),
+    }, "delete")
+  }
+
   return (
     <div className="space-y-6 pb-12">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Batch Builder</h1>
-        <p className="text-muted-foreground mt-1">Choose an entity and fields, download an Excel template, fill it in, upload it, preview, then send.</p>
+        <p className="text-muted-foreground mt-1">
+          {action === "Create"
+            ? "Choose an entity and fields, download an Excel template, fill it in, upload it, preview, then send."
+            : "Choose an entity and Id, load the record, then update, delete, or copy it."}
+        </p>
       </div>
 
+      <div className="space-y-1.5 w-[220px]">
+        <label className={label}>Action</label>
+        <Select value={action} onValueChange={onAction}>
+          <SelectTrigger data-testid="select-batch-action"><SelectValue /></SelectTrigger>
+          <SelectContent>{BATCH_ACTIONS.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
+
+      {action === "Create" ? (<>
       <Card>
         <CardContent className="p-5 space-y-5">
           <div className="flex items-center justify-between rounded-md bg-muted/40 px-4 py-2 text-sm" data-testid="added-counter">
@@ -467,8 +870,8 @@ export default function BatchBuilderPage() {
                 <label key={f.name} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={!!f.required || picked.has(f.name)}
-                    disabled={f.required}
+                    checked={!!f.required || lineAlways(f.name) || picked.has(f.name)}
+                    disabled={!!f.required || lineAlways(f.name)}
                     onChange={() => toggle(f.name)}
                     data-testid={`field-${f.name}`}
                   />
@@ -488,7 +891,7 @@ export default function BatchBuilderPage() {
                 const opts = options[optionKey(entity, f.name)]
                 return (
                   <div key={f.name} className="space-y-1">
-                    <span className="text-sm">{f.name.replace("Line.", "")}{f.required && <span className="text-rose-600"> *</span>}
+                    <span className="text-sm">{lineInputLabel(f.name)}{f.required && <span className="text-rose-600"> *</span>}
                       {f.hint && <span className="text-xs text-muted-foreground"> — {f.hint}</span>}</span>
                     {STATIC_OPTIONS[f.name] ? (
                       <select value={val} onChange={e => set(e.target.value)} className="w-full h-10 rounded-md border bg-background px-3 text-sm" data-testid={`draft-${f.name}`}>
@@ -526,7 +929,7 @@ export default function BatchBuilderPage() {
                         <div key={i} className="flex items-center justify-between text-xs rounded bg-muted/40 px-3 py-1.5">
                           <span>Line {i + 1}: {lineFs.map(f => {
                             const v = l[f.name]
-                            return v ? `${f.name.replace("Line.", "")} ${REF_SOURCES[f.name] ? optName(f.name, v) : v}` : null
+                            return v ? `${lineInputLabel(f.name)} ${REF_SOURCES[f.name] ? optName(f.name, v) : v}` : null
                           }).filter(Boolean).join(" · ")}</span>
                           <button className="text-rose-600" onClick={() => setLines(x => x.filter((_, j) => j !== i))}>Remove</button>
                         </div>
@@ -623,6 +1026,139 @@ export default function BatchBuilderPage() {
         <Card><CardContent className="p-4 text-sm font-mono space-y-1" data-testid="batch-results">
           {results.map((r, i) => <div key={i} className={r.includes("FAILED") || r.includes("failed") ? "text-rose-700" : "text-emerald-700"}>{r}</div>)}
         </CardContent></Card>
+      )}
+      </>) : (
+      <>
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="space-y-1.5 w-[220px]">
+              <label className={label}>Entity</label>
+              <Select value={recordEntity} onValueChange={changeRecordEntity}>
+                <SelectTrigger data-testid="select-record-entity"><SelectValue /></SelectTrigger>
+                <SelectContent>{Object.keys(BATCH_SCHEMAS).map(e => <SelectItem key={e} value={e}>{e}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5 w-[220px]">
+              <label className={label}>Id</label>
+              <Input
+                value={recordId}
+                onChange={e => { setRecordId(e.target.value); setLoaded(null); setEdits({}); setExtraFields([]); setActionError(null); setActionResult(null) }}
+                placeholder="QuickBooks Id"
+                data-testid="input-record-id"
+              />
+            </div>
+            <Button onClick={() => void loadRecord()} disabled={loadingRecord || recordId.trim() === ""} data-testid="button-load-record">
+              {loadingRecord ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Load
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {actionError && !loaded && <p className="text-sm text-rose-600" data-testid="record-error">{actionError}</p>}
+
+      {loaded && (
+        <Card>
+          <div className="px-5 py-3 border-b flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">{recordEntity} {String(loaded.Id ?? recordId)} — {visibleRows.length} field{visibleRows.length === 1 ? "" : "s"}</div>
+              {canEdit && <p className="text-xs text-muted-foreground mt-1">A blank cell does not change that field.</p>}
+            </div>
+            <div className="space-y-1.5 w-[260px]">
+              <label className={label}>Add field</label>
+              <Select key={extraFields.length} disabled={addableFields.length === 0} onValueChange={path => setExtraFields(current => current.includes(path) ? current : [...current, path])}>
+                <SelectTrigger data-testid="select-add-field"><SelectValue placeholder={addableFields.length === 0 ? "No more fields" : "Add a field"} /></SelectTrigger>
+                <SelectContent>
+                  {addableFields.map(row => <SelectItem key={row.path} value={row.path}>{row.path}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="overflow-auto max-h-[500px]">
+            <table className="text-xs w-full" data-testid="table-record-fields">
+              <thead className="sticky top-0 bg-muted">
+                <tr>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">Value</th>
+                  {canEdit && <th className="text-left px-3 py-2 whitespace-nowrap">New value</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map(row => (
+                  <tr key={row.path} className="border-t">
+                    <td className="px-3 py-1.5 whitespace-nowrap align-middle">
+                      <span>{row.label}</span>
+                      {row.label !== row.path && !row.path.startsWith("Line[") && <span className="ml-2 font-mono text-muted-foreground">{row.path}</span>}
+                    </td>
+                    <td className="px-3 py-1.5 break-all align-middle">
+                      {row.detail && <span className="mr-3">{row.detail}</span>}
+                      <span className="font-mono">{displayValue(row.value)}</span>
+                    </td>
+                    {canEdit && (
+                      <td className="px-3 py-1.5 align-middle">
+                        {!row.readOnly && (
+                          <Input
+                            type={row.inputType}
+                            value={edits[row.path] ?? ""}
+                            onChange={e => setEdits(current => ({ ...current, [row.path]: e.target.value }))}
+                            placeholder={row.inputType === "date" ? undefined : "Leave blank to keep"}
+                            className="h-8 font-mono text-xs"
+                            aria-label={`New value for ${row.path}`}
+                            data-testid={`edit-${row.path}`}
+                          />
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-5 py-3 border-t space-y-3">
+            {actionError && <p className="text-sm text-rose-600" data-testid="record-error">{actionError}</p>}
+            {action === "Delete" ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="font-bold text-red-600 border-red-600 hover:bg-red-50 hover:text-red-700"
+                onClick={() => setConfirmDelete(true)}
+                disabled={applying}
+                data-testid="button-delete-record"
+              >
+                {applying ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                Delete
+              </Button>
+            ) : (
+              <Button onClick={() => void applyRecord()} disabled={applying} data-testid="button-apply-record">
+                {applying ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+                {action}
+              </Button>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {actionResult && (
+        <Card><CardContent className="p-4 text-sm font-mono text-emerald-700" data-testid="record-result">{actionResult}</CardContent></Card>
+      )}
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you sure you want to delete</AlertDialogTitle>
+            <AlertDialogDescription className="sr-only">Are you sure you want to delete</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { window.setTimeout(() => void deleteRecord(), 250) }}
+              data-testid="button-delete-confirm"
+            >OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      </>
       )}
     </div>
   )
