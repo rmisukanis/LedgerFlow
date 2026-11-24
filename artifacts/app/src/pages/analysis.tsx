@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
 import { depositIdsOf, isPayment, loadDepositCleared, loadDeposits, loadPayments, paymentIdsOf, reviewRows, storeDocuments, type ReviewRow } from "@/lib/invoice-chain"
 import { invoiceIdsOf, loadInvoices, paymentIdsOfDeposits, reviewDepositRows } from "@/lib/deposit-chain"
-import { defaultFixMemo, depositSuggestions, matchUndepositedFunds, proposeDirectPaymentFixes, proposeUndepositedMatches, stepOne, stepTwoMemo, stepTwoRows, STEP_ONE_DETAIL, STEP_ONE_NAME, STEP_TWO_DETAIL, STEP_TWO_NAME, undepositedPayments, unlinkedDeposits, type AnalysisStep, type ProposedFix, type UnlinkedDeposit } from "@/lib/analysis"
+import { defaultFixMemo, depositLineSuggestions, invoicePaymentsAwaitingDeposit, matchUndepositedFunds, proposeDirectPaymentFixes, proposeUndepositedMatches, stepOne, stepTwoMemo, stepTwoRows, STEP_ONE_DETAIL, STEP_ONE_NAME, STEP_TWO_DETAIL, STEP_TWO_NAME, undepositedPayments, unlinkedDeposits, type AnalysisStep, type OutsideDepositLine, type ProposedFix, type UnlinkedDeposit } from "@/lib/analysis"
 import { qbList, qbQuery, qbQuote } from "@/lib/qb"
 import { formatCurrency } from "@/lib/utils"
 
@@ -191,6 +191,7 @@ export default function AnalysisPage() {
   const [invoiceCount, setInvoiceCount] = useState<number | null>(null)
   const [analysisStep, setAnalysisStep] = useState<AnalysisStep | null>(null)
   const [openDeposits, setOpenDeposits] = useState<UnlinkedDeposit[] | null>(null)
+  const [outsideLines, setOutsideLines] = useState<OutsideDepositLine[]>([])
   const [stepTwoBusy, setStepTwoBusy] = useState(false)
   const [fixMemo, setFixMemo] = useState(defaultFixMemo)
   const [proposals, setProposals] = useState<ProposedFix[] | null>(null)
@@ -268,10 +269,10 @@ export default function AnalysisPage() {
   }, [rows, missingOnly, chain, analysisStep, accountIds, openDeposits])
   const suggestions = useMemo(() => {
     if (analysisStep !== 2 || !rows || !openDeposits) return []
-    const found = depositSuggestions(undepositedPayments(rows), openDeposits)
+    const found = depositLineSuggestions(openDeposits, outsideLines, undepositedPayments(rows), invoicePaymentsAwaitingDeposit(rows))
     if (accountIds.length === 0) return found
     return found.filter(item => accountIds.includes(item.deposit.accountId) || (item.payment != null && accountIds.includes(item.payment.depositAccount)))
-  }, [analysisStep, rows, openDeposits, accountIds])
+  }, [analysisStep, rows, openDeposits, outsideLines, accountIds])
   const invoiceGroups: ChainGroup[] = ["invoice", "payment"]
 
   const loadOpenDeposits = async () => {
@@ -284,7 +285,25 @@ export default function AnalysisPage() {
       if (period.end) where.push(`TxnDate <= '${qbQuote(period.end)}'`)
       const data = await qbQuery(`SELECT * FROM Deposit WHERE ${where.join(" AND ")} MAXRESULTS 1000`)
       const list = qbList<Record<string, unknown>>(data, "Deposit")
-      setOpenDeposits(unlinkedDeposits(list))
+      const unlinked = unlinkedDeposits(list)
+      setOpenDeposits(unlinked)
+      const ids = unlinked.map(deposit => deposit.id)
+      if (ids.length === 0) {
+        setOutsideLines([])
+      } else {
+        const response = await fetch(`${import.meta.env.BASE_URL}api/outside-deposits?depositIds=${encodeURIComponent(ids.join(","))}`)
+        const body = await response.json()
+        if (!response.ok) throw new Error(body.error ?? "Could not read the saved transactions.")
+        const saved = (Array.isArray(body.rows) ? body.rows : []) as Array<Record<string, string>>
+        setOutsideLines(saved.map(row => ({
+          depositId: row.deposit_id,
+          transactionId: row.transaction_id,
+          date: row.date,
+          amountTotal: Number(String(row.amount_total).replace(/[^0-9.-]/g, "")),
+          amountFee: row.amount_fee ? Number(String(row.amount_fee).replace(/[^0-9.-]/g, "")) : null,
+          amountNet: row.amount_net ? Number(String(row.amount_net).replace(/[^0-9.-]/g, "")) : null,
+        })).filter(row => row.depositId && Number.isFinite(row.amountTotal)))
+      }
       if (list.length === 1000) setNotice("QuickBooks returned 1000 deposits, so later ones are not compared.")
     } catch (e) {
       setOpenDeposits([])
@@ -403,6 +422,7 @@ export default function AnalysisPage() {
     setUsedRange("")
     setAnalysisStep(null)
     setOpenDeposits(null)
+    setOutsideLines([])
     setProposals(null)
     try {
       if (kind === "payment") {
@@ -643,18 +663,22 @@ export default function AnalysisPage() {
             </div>
           </Card>
           <Card>
-            <div className="px-5 py-3 border-b text-sm font-semibold">Deposits without a payment ({stepTwoBusy || openDeposits == null ? "…" : suggestions.length})</div>
+            <div className="px-5 py-3 border-b text-sm font-semibold">Deposits without a payment ({stepTwoBusy || openDeposits == null ? "…" : new Set(suggestions.map(item => item.deposit.id)).size})</div>
             <div className="overflow-auto max-h-[500px]">
               <table className="text-xs w-full" data-testid="table-unlinked-deposits">
                 <thead className="sticky top-0">
                   <tr>
                     <th rowSpan={2} className="sticky left-0 z-20 text-right px-3 py-2 whitespace-nowrap border-r bg-white">#</th>
                     <th colSpan={7} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>Deposit</th>
+                    <th colSpan={5} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>Saved transaction</th>
                     <th colSpan={6} className="text-left px-3 py-2 whitespace-nowrap" style={matchHead}>Potential payment match</th>
                   </tr>
                   <tr>
                     {["Id", "TxnDate", "TotalAmt", "ToAccountRef", "ToAccountRef Name", "Lines", "Customer"].map(heading => (
                       <th key={heading} className="text-left px-3 py-2 whitespace-nowrap" style={depositHead}>{heading}</th>
+                    ))}
+                    {["Deposit ID", "Date", "amount_total", "amount_fee", "amount_net"].map(heading => (
+                      <th key={heading} className="text-left px-3 py-2 whitespace-nowrap" style={invoiceHead}>{heading}</th>
                     ))}
                     {["DepositToAccountRef", "TotalAmt", "Id", "TxnDate", "Why", "Likelihood"].map(heading => (
                       <th key={heading} className="text-left px-3 py-2 whitespace-nowrap" style={{ ...matchHead, width: heading === "DepositToAccountRef" || heading === "Why" ? "22ch" : undefined }}>{heading}</th>
@@ -663,11 +687,11 @@ export default function AnalysisPage() {
                 </thead>
                 <tbody>
                   {stepTwoBusy || openDeposits == null ? (
-                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={14}>Looking up deposits…</td></tr>
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={19}>Looking up deposits…</td></tr>
                   ) : suggestions.length === 0 ? (
-                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={14}>No deposits in this period are missing a payment.</td></tr>
+                    <tr><td className="px-3 py-4 text-muted-foreground" colSpan={19}>No deposits in this period are missing a payment.</td></tr>
                   ) : suggestions.map((item, index) => (
-                    <tr key={item.deposit.id} className="border-t" data-testid={`unlinked-deposit-${item.deposit.id}`}>
+                    <tr key={`${item.deposit.id}-${item.outside?.transactionId ?? "none"}-${index}`} className="border-t" data-testid={`unlinked-deposit-${item.deposit.id}`}>
                       <td className="sticky left-0 z-10 px-3 py-1.5 whitespace-nowrap text-right tabular-nums border-r bg-white">{index + 1}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.id}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.txnDate}</td>
@@ -676,6 +700,11 @@ export default function AnalysisPage() {
                       <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.accountName}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.lineAmounts.map(amount => formatCurrency(amount)).join(", ")}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={depositCell}>{item.deposit.customerNames.join(", ")}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{item.outside?.depositId ?? ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap" style={invoiceCell}>{item.outside?.date ?? ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{item.outside ? formatCurrency(item.outside.amountTotal) : ""}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{item.outside?.amountFee == null ? "" : formatCurrency(item.outside.amountFee)}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={invoiceCell}>{item.outside?.amountNet == null ? "" : formatCurrency(item.outside.amountNet)}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={{ ...matchCell, width: "22ch", minWidth: "22ch" }}>{item.payment?.depositAccount ?? ""}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap text-right tabular-nums" style={matchCell}>{item.payment ? formatCurrency(item.payment.total) : ""}</td>
                       <td className="px-3 py-1.5 whitespace-nowrap" style={matchCell}>{item.payment?.paymentId ?? ""}</td>

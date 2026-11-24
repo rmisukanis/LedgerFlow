@@ -198,6 +198,95 @@ export function depositSuggestions(payments: UndepositedPayment[], deposits: Unl
   })
 }
 
+export interface OutsideDepositLine {
+  depositId: string
+  transactionId: string
+  date: string
+  amountTotal: number
+  amountFee: number | null
+  amountNet: number | null
+}
+
+export interface DepositLineSuggestion {
+  deposit: UnlinkedDeposit
+  outside: OutsideDepositLine | null
+  payment: UndepositedPayment | null
+  reason: string
+  likelihood: number | null
+}
+
+interface AwaitingPayment extends UndepositedPayment {
+  invoiceTotal: number
+}
+
+function dayOf(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10)
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (!match) return ""
+  return `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`
+}
+
+function sameMoney(left: number, right: number) {
+  return !Number.isNaN(left) && !Number.isNaN(right) && Math.round(Math.abs(left) * 100) === Math.round(Math.abs(right) * 100)
+}
+
+export function invoicePaymentsAwaitingDeposit(rows: ReviewRow[]): AwaitingPayment[] {
+  const seen = new Set<string>()
+  const payments: AwaitingPayment[] = []
+  for (const row of rows) {
+    const link = row.paymentLinkType.replace(/\s/g, "").toLowerCase()
+    if (!row.id || !row.paymentId || row.depositId || link === "creditmemo" || seen.has(row.paymentId)) continue
+    seen.add(row.paymentId)
+    payments.push({
+      paymentId: row.paymentId,
+      txnDate: row.paymentTxnDate,
+      total: money(row.paymentTotal),
+      customerId: row.customerId,
+      customerName: row.customerName,
+      depositAccount: row.depositAccount,
+      invoiceTotal: money(row.total),
+    })
+  }
+  return payments
+}
+
+export function depositLineSuggestions(deposits: UnlinkedDeposit[], lines: OutsideDepositLine[], payments: UndepositedPayment[], awaiting: AwaitingPayment[]): DepositLineSuggestion[] {
+  const whole = new Map(depositSuggestions(payments, deposits).map(item => [item.deposit.id, item]))
+  const byDeposit = new Map<string, OutsideDepositLine[]>()
+  for (const line of lines) byDeposit.set(line.depositId, [...(byDeposit.get(line.depositId) ?? []), line])
+  const used = new Set<string>()
+  const claim = (line: OutsideDepositLine) => {
+    const amount = line.amountTotal
+    const day = dayOf(line.date)
+    const hits = awaiting.filter(payment => !used.has(payment.paymentId) && (sameMoney(amount, payment.total) || sameMoney(amount, payment.invoiceTotal)))
+    const sameDay = hits.filter(payment => day && dayOf(payment.txnDate) === day)
+    const pool = sameDay.length > 0 ? sameDay : hits
+    const paymentHits = pool.filter(payment => sameMoney(amount, payment.total))
+    const chosen = (paymentHits.length > 0 ? paymentHits : pool)[0]
+    if (!chosen || (pool.length > 1 && sameDay.length !== 1 && hits.length !== 1)) {
+      return { payment: null, reason: "No invoice payment has this amount_total.", likelihood: null }
+    }
+    used.add(chosen.paymentId)
+    const onPayment = sameMoney(amount, chosen.total)
+    const dated = Boolean(day) && dayOf(chosen.txnDate) === day
+    return {
+      payment: chosen,
+      reason: onPayment
+        ? dated ? "amount_total matches the payment on the same date." : "amount_total matches the payment."
+        : dated ? "amount_total matches the invoice on the same date." : "amount_total matches the invoice.",
+      likelihood: hits.length === 1 ? 85 : 70,
+    }
+  }
+  return deposits.flatMap(deposit => {
+    const matched = byDeposit.get(deposit.id) ?? []
+    if (matched.length === 0) {
+      const suggestion = whole.get(deposit.id)
+      return [{ deposit, outside: null, payment: suggestion?.payment ?? null, reason: suggestion?.reason ?? "No payment has this date and total.", likelihood: suggestion?.likelihood ?? null }]
+    }
+    return matched.map(outside => ({ deposit, outside, ...claim(outside) }))
+  })
+}
+
 export function stepTwoRows(rows: ReviewRow[], matches: Map<string, UnlinkedDeposit>) {
   const wanted = new Set(undepositedPayments(rows).map(payment => payment.paymentId))
   return rows.filter(row => wanted.has(row.paymentId)).map(row => {

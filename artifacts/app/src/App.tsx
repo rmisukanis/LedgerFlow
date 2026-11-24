@@ -25,6 +25,7 @@ const keptPages = [
   { id: "explorer", paths: ["/", "/crud", "/invoices", "/api-explorer"], Page: ApiExplorer },
   { id: "analysis", paths: ["/analysis"], Page: Analysis },
   { id: "audit", paths: ["/audit"], Page: Audit },
+  { id: "outside", paths: ["/outside-deposits"], Page: OutsideDeposits },
 ]
 
 function Router() {
@@ -51,7 +52,6 @@ function Router() {
       {!activeId && (
         <Switch>
           <Route path="/batch" component={BatchBuilder} />
-          <Route path="/outside-deposits" component={OutsideDeposits} />
           <Route path="/reconcile" component={Reconcile} />
           <Route component={NotFound} />
         </Switch>
