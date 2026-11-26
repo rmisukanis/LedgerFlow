@@ -9,6 +9,7 @@ import apiExplorerRouter from "./api-explorer";
 import apiCollectionsRouter from "./api-collections";
 import transactionsRouter from "./transactions";
 import outsideDepositsRouter from "./outside-deposits";
+import bankingFeedRouter from "./banking-feed";
 
 const router: IRouter = Router();
 
@@ -22,5 +23,6 @@ router.use(apiExplorerRouter);
 router.use(apiCollectionsRouter);
 router.use(transactionsRouter);
 router.use(outsideDepositsRouter);
+router.use(bankingFeedRouter);
 
 export default router;

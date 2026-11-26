@@ -11,6 +11,7 @@ import Analysis from '@/pages/analysis';
 import Audit from '@/pages/audit';
 import Reconcile from '@/pages/reconcile';
 import OutsideDeposits from '@/pages/outside-deposits';
+import BankingFeed from '@/pages/banking-feed';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +27,7 @@ const keptPages = [
   { id: "analysis", paths: ["/analysis"], Page: Analysis },
   { id: "audit", paths: ["/audit"], Page: Audit },
   { id: "outside", paths: ["/outside-deposits"], Page: OutsideDeposits },
+  { id: "banking", paths: ["/banking-feed"], Page: BankingFeed },
 ]
 
 function Router() {

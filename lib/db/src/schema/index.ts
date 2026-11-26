@@ -6,3 +6,4 @@ export * from "./api-collections";
 export * from "./api-requests";
 export * from "./transactions";
 export * from "./outside-deposits";
+export * from "./banking-feed";

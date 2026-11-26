@@ -6,6 +6,7 @@ import {
   Search,
   Scale,
   Landmark,
+  Wallet,
   ClipboardList,
   LogOut,
   Hexagon
@@ -22,9 +23,10 @@ export function Layout({ children }: LayoutProps) {
   const navItems = [
     { name: "API Explorer", href: "/api-explorer", icon: Network },
     { name: "Batch Builder", href: "/batch", icon: Layers },
-    { name: "Analysis", href: "/analysis", icon: Search },
     { name: "Audit", href: "/audit", icon: ClipboardList },
+    { name: "Analysis", href: "/analysis", icon: Search },
     { name: "Outside Deposits", href: "/outside-deposits", icon: Landmark },
+    { name: "Banking Feed", href: "/banking-feed", icon: Wallet },
     { name: "Reconcile", href: "/reconcile", icon: Scale },
   ]
 
