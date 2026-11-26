@@ -5,6 +5,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { DateField, DATE_MACROS } from "@/components/GeneralLedgerBuilder"
+import { aiModelLabel, getAiModel, useAiModel } from "@/lib/ai-model"
 import { macroRange } from "@/pages/analysis"
 import { qbList, qbQuery } from "@/lib/qb"
 import { formatCurrency } from "@/lib/utils"
@@ -246,17 +247,19 @@ export default function BankingFeed() {
     setError(null)
     setNotice(null)
     try {
+      const provider = getAiModel()
+      const modelName = aiModelLabel(provider)
       const response = await fetch(`${FEED}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bankAccountId }),
+        body: JSON.stringify({ bankAccountId, provider }),
       })
       const body = await response.json()
-      if (!response.ok) throw new Error(body.error ?? "Grok could not review the leftovers")
+      if (!response.ok) throw new Error(body.error ?? `${modelName} could not review the leftovers`)
       await pull()
-      setNotice(`Grok identified ${body.identified ?? 0}. ${body.still ?? 0} still need a person. Nothing was posted to QuickBooks.`)
+      setNotice(`${modelName} identified ${body.identified ?? 0}. ${body.still ?? 0} still need a person. Nothing was posted to QuickBooks.`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Grok could not review the leftovers")
+      setError(e instanceof Error ? e.message : `${aiModelLabel(getAiModel())} could not review the leftovers`)
     } finally {
       setReviewing(false)
     }
@@ -281,6 +284,7 @@ export default function BankingFeed() {
   }
 
   const needsReview = rows?.some(line => line.status === "needs_review") ?? false
+  const modelName = aiModelLabel(useAiModel())
   const allSelected = rows != null && rows.length > 0 && rows.every(line => selected.includes(line.id))
 
   const runPull = async () => {
@@ -354,31 +358,35 @@ export default function BankingFeed() {
           <p className="text-xs text-muted-foreground">Columns are date, description, and amount. A positive amount is money in. A negative amount is money out. Debit and credit can replace amount. {fileName}</p>
           <div className="space-y-3 border-t pt-4">
             <label className={label}>Time frame</label>
-            <div className="flex flex-wrap gap-3 items-end">
-              <div className="space-y-1.5 w-40">
-                <label className={label}>Month</label>
-                <select className={selectCls} value={month} onChange={e => setMonth(Number(e.target.value))} data-testid="banking-month">
-                  {MONTHS.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
-                </select>
+            <div className="space-y-3">
+              <div className="flex flex-nowrap items-end gap-3">
+                <div className="space-y-1.5 w-40 shrink-0">
+                  <label className={label}>Month</label>
+                  <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={month} onChange={e => setMonth(Number(e.target.value))} data-testid="banking-month">
+                    {MONTHS.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1.5 w-28 shrink-0">
+                  <label className={label}>Year</label>
+                  <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={year} onChange={e => setYear(Number(e.target.value))} data-testid="banking-year">
+                    {YEAR_OPTIONS.map(item => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1.5 w-44 shrink-0"><label className={label}>start_date</label><DateField onIso={setStartDate} testId="banking-start_date" /></div>
+                <div className="space-y-1.5 w-44 shrink-0"><label className={label}>end_date</label><DateField onIso={setEndDate} testId="banking-end_date" /></div>
               </div>
-              <div className="space-y-1.5 w-28">
-                <label className={label}>Year</label>
-                <select className={selectCls} value={year} onChange={e => setYear(Number(e.target.value))} data-testid="banking-year">
-                  {YEAR_OPTIONS.map(item => <option key={item} value={item}>{item}</option>)}
-                </select>
+              <div className="flex flex-nowrap items-end gap-3">
+                <div className="space-y-1.5 w-64 shrink-0">
+                  <label className={label}>date_macro</label>
+                  <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={macro} onChange={e => setMacro(e.target.value)} data-testid="banking-date_macro">
+                    <option value="">— not set —</option>
+                    {DATE_MACROS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </div>
+                <Button type="button" variant="outline" onClick={() => void runPull()} disabled={pulling} data-testid="button-pull-banking">
+                  {pulling ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull statement lines
+                </Button>
               </div>
-              <div className="space-y-1.5 w-40"><label className={label}>start_date</label><DateField onIso={setStartDate} testId="banking-start_date" /></div>
-              <div className="space-y-1.5 w-40"><label className={label}>end_date</label><DateField onIso={setEndDate} testId="banking-end_date" /></div>
-              <div className="space-y-1.5 w-52">
-                <label className={label}>date_macro</label>
-                <select className={selectCls} value={macro} onChange={e => setMacro(e.target.value)} data-testid="banking-date_macro">
-                  <option value="">— not set —</option>
-                  {DATE_MACROS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </div>
-              <Button type="button" variant="outline" onClick={() => void runPull()} disabled={pulling} data-testid="button-pull-banking">
-                {pulling ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Pull statement lines
-              </Button>
             </div>
             <p className="text-xs text-muted-foreground">A date macro is used as the range. Otherwise the start and end dates are used. With neither of those, the month and year are used. This Year is the default. Pull reads the saved statement lines{bankAccountId ? " for the selected bank" : ""}.</p>
           </div>
@@ -421,7 +429,7 @@ export default function BankingFeed() {
             </Button>
             {needsReview && (
               <Button type="button" variant="outline" onClick={() => void review()} disabled={matching || reviewing} data-testid="button-review-banking">
-                {reviewing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Ask Grok
+                {reviewing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Ask {modelName}
               </Button>
             )}
           </div>

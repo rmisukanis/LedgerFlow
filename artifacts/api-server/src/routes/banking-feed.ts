@@ -129,6 +129,65 @@ async function grokModel(base: string, key: string) {
   return ids[0];
 }
 
+const MATCH_INSTRUCTION = "You match bank statement lines to QuickBooks records. Reply with JSON only: {\"picks\":[{\"id\":number,\"entity\":\"Deposit\"|\"Purchase\"|\"Payment\"|\"Bill\"|\"\",\"qbId\":\"\",\"confidence\":\"high\"|\"low\",\"note\":\"\"}]}. Choose a record only from that line's candidates. Use high only when the description and amount are the same money. Otherwise leave entity and qbId blank.";
+
+async function askGrok(user: string) {
+  const key = process.env.GROK_API_KEY?.trim() ?? "";
+  if (!key) throw new Error("Add GROK_API_KEY to the .env file, then restart the API.");
+  const base = (process.env.GROK_BASE_URL?.trim() || "https://api.x.ai/v1").replace(/\/$/, "");
+  const model = await grokModel(base, key);
+  const response = await fetch(`${base}/responses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(120000),
+    body: JSON.stringify({
+      model,
+      input: [
+        { role: "system", content: MATCH_INSTRUCTION },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+  const body = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(grokError(body));
+  return responseText(body);
+}
+
+function interactionText(body: Record<string, unknown>) {
+  if (typeof body.output_text === "string" && body.output_text.trim()) return body.output_text;
+  const steps = Array.isArray(body.steps) ? body.steps : [];
+  const parts: string[] = [];
+  for (const step of steps) {
+    const content = (step as { content?: { type?: string; text?: string }[] }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) if (block?.text) parts.push(block.text);
+  }
+  return parts.join("\n");
+}
+
+async function askGemini(user: string) {
+  const key = process.env.GOOGLE_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || "";
+  if (!key) throw new Error("Add GEMINI_API_KEY to the .env file, then restart the API.");
+  const model = process.env.GEMINI_MODEL?.trim() || "gemini-4-hydrogen";
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    signal: AbortSignal.timeout(120000),
+    body: JSON.stringify({
+      model,
+      store: false,
+      system_instruction: MATCH_INSTRUCTION,
+      input: user,
+      response_format: { type: "text", mime_type: "application/json" },
+    }),
+  });
+  const body = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(grokError(body));
+  const text = interactionText(body);
+  if (!text.trim()) throw new Error("Gemini did not answer.");
+  return text;
+}
+
 function responseText(body: Record<string, unknown>) {
   if (typeof body.output_text === "string" && body.output_text.trim()) return body.output_text;
   const output = Array.isArray(body.output) ? body.output : [];
@@ -284,9 +343,10 @@ router.post("/banking-feed/match", async (req, res): Promise<void> => {
 
 router.post("/banking-feed/review", async (req, res): Promise<void> => {
   const bankAccountId = String(req.body?.bankAccountId ?? "").trim();
-  const key = process.env.GROK_API_KEY?.trim() ?? "";
-  if (!key) {
-    res.status(400).json({ error: "Add GROK_API_KEY to the .env file, then restart the API." });
+  const provider = String(req.body?.provider ?? "grok");
+  const label = provider === "gemini" ? "Gemini" : "Grok";
+  if (provider !== "grok" && provider !== "gemini") {
+    res.status(400).json({ error: "Choose Grok or Gemini." });
     return;
   }
   if (!bankAccountId) {
@@ -314,27 +374,10 @@ router.post("/banking-feed/review", async (req, res): Promise<void> => {
       flag: line.reason,
       candidates: optionsFor(line, candidates).map(item => ({ entity: item.entity, id: item.id, date: item.date, name: item.name, amount: (item.amountCents / 100).toFixed(2) })),
     }));
-    const base = (process.env.GROK_BASE_URL?.trim() || "https://api.x.ai/v1").replace(/\/$/, "");
-    const model = await grokModel(base, key);
-    const response = await fetch(`${base}/responses`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(120000),
-      body: JSON.stringify({
-        model,
-        input: [
-          { role: "system", content: "You match bank statement lines to QuickBooks records. Reply with JSON only: {\"picks\":[{\"id\":number,\"entity\":\"Deposit\"|\"Purchase\"|\"Payment\"|\"Bill\"|\"\",\"qbId\":\"\",\"confidence\":\"high\"|\"low\",\"note\":\"\"}]}. Choose a record only from that line's candidates. Use high only when the description and amount are the same money. Otherwise leave entity and qbId blank." },
-          { role: "user", content: JSON.stringify({ lines: packets }) },
-        ],
-      }),
-    });
-    const body = await response.json() as Record<string, unknown>;
-    if (!response.ok) {
-      const message = grokError(body);
-      res.status(502).json({ error: message });
-      return;
-    }
-    const raw = responseText(body).replace(/```json|```/g, "").trim();
+    const rawText = provider === "gemini"
+      ? await askGemini(JSON.stringify({ lines: packets }))
+      : await askGrok(JSON.stringify({ lines: packets }));
+    const raw = rawText.replace(/```json|```/g, "").trim();
     const jsonStart = raw.indexOf("{");
     const jsonEnd = raw.lastIndexOf("}");
     const parsed = JSON.parse(jsonStart >= 0 && jsonEnd > jsonStart ? raw.slice(jsonStart, jsonEnd + 1) : "{}") as { picks?: { id?: number; entity?: string; qbId?: string; confidence?: string; note?: string }[] };
@@ -356,11 +399,11 @@ router.post("/banking-feed/review", async (req, res): Promise<void> => {
           action: actionFor(entity),
           qbEntity: entity,
           qbId,
-          reason: note ? `Grok: ${note}` : `Grok matched ${entity} ${qbId}.`,
+          reason: note ? `${label}: ${note}` : `${label} matched ${entity} ${qbId}.`,
         }).where(eq(bankingFeedLinesTable.id, line.id));
         continue;
       }
-      if (note) await db.update(bankingFeedLinesTable).set({ reason: `Grok: ${note}` }).where(eq(bankingFeedLinesTable.id, line.id));
+      if (note) await db.update(bankingFeedLinesTable).set({ reason: `${label}: ${note}` }).where(eq(bankingFeedLinesTable.id, line.id));
     }
     const rows = await db.select().from(bankingFeedLinesTable).where(eq(bankingFeedLinesTable.bankAccountId, bankAccountId)).orderBy(bankingFeedLinesTable.txnDate, bankingFeedLinesTable.id);
     res.json({ rows: rows.map(toResponse), identified, still: lines.length - identified });
@@ -369,7 +412,7 @@ router.post("/banking-feed/review", async (req, res): Promise<void> => {
       res.status(401).json({ error: "QuickBooks is not connected" });
       return;
     }
-    const message = err instanceof QbUpstreamError ? err.message : err instanceof Error ? err.message : "Grok did not answer.";
+    const message = err instanceof QbUpstreamError ? err.message : err instanceof Error ? err.message : `${label} did not answer.`;
     res.status(502).json({ error: message });
   }
 });

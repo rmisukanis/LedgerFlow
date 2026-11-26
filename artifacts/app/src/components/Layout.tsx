@@ -11,6 +11,7 @@ import {
   LogOut,
   Hexagon
 } from "lucide-react"
+import { AI_MODELS, setAiModel, useAiModel } from "@/lib/ai-model"
 import { cn } from "@/lib/utils"
 
 interface LayoutProps {
@@ -19,6 +20,7 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const [location] = useLocation()
+  const aiModel = useAiModel()
 
   const navItems = [
     { name: "API Explorer", href: "/api-explorer", icon: Network },
@@ -79,7 +81,20 @@ export function Layout({ children }: LayoutProps) {
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden relative bg-muted/20">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none opacity-50" />
-        <div className="flex-1 overflow-auto z-0 p-8">
+        <div className="relative z-10 flex justify-end px-8 pt-4">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="font-medium text-muted-foreground">AI Model</span>
+            <select
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              value={aiModel}
+              onChange={event => setAiModel(event.target.value === "gemini" ? "gemini" : "grok")}
+              data-testid="select-ai-model"
+            >
+              {AI_MODELS.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="flex-1 overflow-auto z-0 px-8 pb-8">
           <div className="max-w-7xl mx-auto">
             {children}
           </div>
